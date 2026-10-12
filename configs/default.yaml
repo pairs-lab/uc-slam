@@ -1,0 +1,848 @@
+# UC-SLAM parameter file: the single source for every estimator / gate /
+# training constant (plan sec. 1.3, 6.1 M0; ENG-17). Python reads it through
+# ucslam.train.load_config(); the C++ fork must read the same file (TODO).
+#
+# Provenance: manuscript defaults from papers/main.tex Sec. VIII (l.511:
+# sigma_0 = 0.1, sigma_rw = 0.02 s^-1/2, gate m/n = 3/5 at chi2_{1,0.99},
+# escalation below 45 % tracking inliers) and Sec. III (l.152: chi2 gates
+# 5.991 at 2 DoF, 7.815 at 3 DoF = 95 % quantiles). chi2 thresholds are stored
+# as (dof, level) and computed with scipy at load time; the numeric values in
+# comments are for reading only and are cross-checked by tests.
+#
+# Every entry is tagged  [fixed]  (identical in all experiments) or
+# [fitted-per-domain]  (fitted on held-out data per sensor domain, never per
+# sequence, plan I-3). The manuscript's parameter table is to be generated
+# from this file.
+
+depth_prior:                       # Sec. VI-C, Eq. (achain)
+  sigma_0: 0.1                     # [fixed] a_0 prior std (log-scale trust radius, ~ +/-10 %)
+  sigma_rw: 0.02                   # [fixed] a_k random-walk density, s^-1/2
+  sigma_net: null                  # [fitted-per-domain] affine log-depth noise model (Sec. VI-C)
+
+gates:                             # Sec. III (l.152), Sec. V-A (l.418)
+  chi2_reproj:                     # outlier gates on whitened reprojection residuals
+    mono:   {dof: 2, level: 0.95}  # [fixed] -> 5.991
+    stereo: {dof: 3, level: 0.95}  # [fixed] -> 7.815
+  escalation:                      # m-of-n gate for the matcher escalation (Sec. IV-C, VIII)
+    m: 3                           # [fixed]
+    n: 5                           # [fixed]
+    chi2: {dof: 1, level: 0.99}    # [fixed] -> 6.635
+    min_inlier_ratio: 0.45         # [fixed] escalate when tracking inliers fall below 45 %
+
+covhead:                           # Sec. IV-A/B, Eqs. (cholesky), (nll); ucslam/covhead.py
+  in_dim: 65                       # descriptor (64) + score (1); must equal backbone.desc_dim + 1
+  hidden: 64
+  eps: 0.01                        # [fixed] floor on the Cholesky diagonal [px] (NOT + eps I on Sigma)
+  sigma0_init: 1.0                 # initial isotropic std [px]; bias initialization only
+  lam_cal: 0.1                     # [fixed] calibration weight lambda_cal in Eq. (4)
+  beta_nll: 0.0                    # [fixed] 0 = plain NLL; >0 = Seitzer beta-NLL (arXiv:2203.09168)
+  split_cal: false                 # unbiased split-batch calibration estimator (MATH-14)
+  truncated_nll: false             # censored-likelihood NLL for the hard association radius
+  temperature2: null               # [fitted-per-domain] post-hoc tau^2 from the held-out pair set
+
+association:                       # homography self-supervision; ucslam/homography.py::associate
+  radius_px: 12.0                  # [fixed] >= 3x expected sigma (the shipped 4 px censored |e| at 4.000)
+  mutual: true                     # mutual nearest neighbour
+  ratio: 0.8                       # nearest / second-nearest distance ratio test (both sides)
+  border_px: 8                     # ground-truth locations closer than this to the border are dropped
+
+training:                          # ucslam/train.py
+  target: pristine                 # pristine | two_view   (MATH-10 options (a) / (b))
+  ref_upsample: 2                  # reference view detected at this upsampling, keypoints divided back
+  backbone: xfeat                  # xfeat | tiny (tiny = CPU stand-in, never for reported numbers)
+  topk: 1024                       # detections per view
+  ref_topk: 2048                   # detections on the (upsampled) reference view
+  pairs_per_step: 6
+  steps: 2000
+  lr: 1.0e-3
+  heldout_pairs: 64                # held-out items (one pair each); disjoint from training by construction
+  heldout_seed_offset: 1000003     # RNG stream for held-out pair augmentation
+  image_size: [256, 320]           # procedural texture size (h, w); multiples of 32 (XFeat resizes to a multiple of 32)
+  n_virtual_textures: 100000       # size of the procedural item-id pool
+  log_every: 50
+  train_fit_window: 20             # steps of training m^2 kept for the (diagnostic) train-fit tau^2
+
+trajectory:                        # ucslam/trajectory.py, ground-truth interpolation
+  max_gap_ns: 20000000             # [fixed] 20 ms. Refuse to interpolate across a longer gap.
+                                   #   EuRoC ground truth runs at 200 Hz (5 ms) and TUM-VI mocap
+                                   #   at 120 Hz (8.3 ms), so 20 ms admits a few dropped samples
+                                   #   and rejects a real mocap dropout.
+  euroc_gt_rel: mav0/state_groundtruth_estimate0/data.csv   # [fixed] body pose in world, q as w,x,y,z
+  tumvi_gt_rel: dso/gt_imu.csv                              # [fixed] IMU pose in mocap world, q as w,x,y,z
+  image_csv_rel: mav0/{which}/data.csv                      # [fixed] image index of camera {which}
+
+cameras:                           # ucslam/calib.py, camera models and dataset calibration
+  z_min: 1.0e-6                    # [fixed] camera-frame z at or below this cannot be projected, project() returns NaN
+  unproject_tol_px: 1.0e-7         # [fixed] convergence tolerance of the undistortion solve, in pixels
+  unproject_max_iter: 20           # [fixed] Newton iteration cap of unproject()
+
+patchcov:                          # ucslam/patchcov.py, the content-based (non-learned) arm of gate G-2
+  half: 4                          # [fixed] patch half width [px]. Statistics use a (2*half+1)^2 window
+  noise_std: 2.0                   # [fixed] image noise std [gray levels] in the Lucas-Kanade covariance
+  ridge: 1.0e-3                    # [fixed] ridge added to the summed structure tensor before inversion
+  chunk: 65536                     # [fixed] keypoints per vectorized chunk. Memory only, no effect on values
+
+pnp:                               # ucslam/pnp.py, motion-only PnP in distorted pixels
+  n_iters: 15                      # [fixed] maximum Levenberg-Marquardt iterations
+  lm_lambda: 1.0e-4                # [fixed] initial Levenberg damping, relative to diag(H)
+  huber: null                      # [fixed] null = plain least squares. A float is the Huber radius on
+                                   #   the whitened residual norm sqrt(r^T W r)
+  step_tol: 1.0e-10                # [fixed] stop when the relative cost decrease falls below this,
+                                   #   the same rule as ucslam/geometry.py::pnp_gauss_newton
+  inlier_gate: gates.chi2_reproj.mono   # [fixed] pointer, not a value: the inlier test reuses the 2 DoF
+                                   #   95 % reprojection gate already defined above (5.991)
+
+stereo:                            # ucslam/stereo.py, stereo landmark harvesting for gate G-2
+  ratio: 0.8                       # [fixed] nearest / second-nearest descriptor DISTANCE ratio
+  mutual: true                     # [fixed] mutual nearest neighbour on the 64-D descriptors
+  epipolar_rad: 0.002              # [fixed] max Sampson angular epipolar error [rad]. 0.92 px of joint
+                                   #         two-view distance at f = 458, so about 1.3 px in one view
+  z_min: 0.5                       # [fixed] min triangulated depth in the cam0 frame [m]
+  z_max: 40.0                      # [fixed] max triangulated depth in the cam0 frame [m]
+  parallax_min_deg: 0.3            # [fixed] min angle between the two bearings [deg]
+  sigma_px: 1.0                    # [fixed] assumed isotropic pixel noise for triangulation_cov [px]
+  cov_ridge_rel: 1.0e-6            # [fixed] relative ridge on a rank-deficient J^T W J (times lambda_max)
+  cov_cond_max: 1.0e+6             # [fixed] reject a landmark whose 3x3 point covariance is worse conditioned.
+                                   #         a point at the 0.3 deg parallax floor on the 0.11 m EuRoC baseline sits at 1.5e5
+  match_chunk_entries: 20000000    # [fixed] similarity-matrix entries per chunk. It bounds matcher memory
+
+corpus:                            # the gate G-2 residual corpus, experiments/real_corpus.py
+  offsets_s: [0.10, 0.20, 0.30]    # [fixed] anchor to partner time offsets [s]. The pilot of
+                                   #   2026-09-20 measured the median transferred sigma against
+                                   #   the median residual at 0.10, 0.25 and 0.50 s. At 0.50 s the
+                                   #   transferred sigma reached 2.04 px on EuRoC and 5.31 px on
+                                   #   TUM-VI while the residual medians were 1.56 and 2.10 px, so
+                                   #   the known term already dominates there. Below 0.30 s the two
+                                   #   terms stay comparable, so the offsets stop at 0.30 s.
+  anchors_per_seq: 64              # [fixed] anchor frames per sequence, spread evenly over the
+                                   #   frames that have valid ground truth and a partner frame
+  topk: 1024                       # [fixed] XFeat detections per view, the same as training.topk
+  desc_ratio: 0.8                  # [fixed] ratio test of the descriptor half of the association,
+                                   #   the same value as stereo.ratio and association.ratio
+  desc_mutual: true                # [fixed] mutual nearest neighbour in the descriptor half
+  sigma_cal_anchors: 24            # [fixed] anchor frames sampled for the stereo noise calibration
+  sigma_cal_gate_px: 10.0          # [fixed] generous pre-gate [px] on the Sampson pixel distance.
+                                   #   About 20 times the expected noise, so its effect on the
+                                   #   median is negligible while gross matches are removed.
+  sigma_cal_min_matches: 200       # [fixed] refuse to calibrate on fewer matches than this
+  sigma_px_lo: 0.05                # [fixed] plausibility floor of the calibrated stereo noise [px]
+  sigma_px_hi: 3.0                 # [fixed] plausibility ceiling of the calibrated noise [px].
+                                   #   Outside [lo, hi] the tool warns and falls back to
+                                   #   stereo.sigma_px.
+  epipolar_bias_warn_px: 0.3       # [fixed] warn when the measured signed epipolar bias of a
+                                   #   sequence exceeds this [px]. A bias is a stereo extrinsic
+                                   #   error, not keypoint noise, and the fixed stereo.epipolar_rad
+                                   #   gate then rejects true matches.
+  refine_huber_px: 3.0             # [fixed] Huber radius [px] of the pose refinement that fills
+                                   #   pair_T_ba_refined. The refinement never enters the stored
+                                   #   residual e, which is always taken against the ground truth
+                                   #   pose. Phase 2 recomputes the residual from X_a, uv_b and
+                                   #   the refined pose.
+  refine_min_points: 12            # [fixed] a pair with fewer correspondences than this is not
+                                   #   refined at all. Its pair_T_ba_refined falls back to the
+                                   #   ground truth pose and pair_refined_ok records that, so no
+                                   #   pair is silently deleted downstream. Twelve points give 24
+                                   #   measurements against 6 unknowns, the same floor
+                                   #   derisk.min_points_per_pair uses.
+  min_residuals_train: 150000      # [fixed] size the training split was asked for, criterion 1
+                                   #   of the corpus verdict
+  min_residuals_heldout: 30000     # [fixed] size the held-out split was asked for
+  refine_shift_max_px: 0.25        # [fixed] criterion 3 of the corpus verdict [px]. A quarter of
+                                   #   a pixel, well under the residual median of about 1 px.
+                                   #   Fixed before the measurement, since the pilot of
+                                   #   2026-09-20 put the figure at 0.11 px.
+  low_parallax_disparity_px: 2.0   # [fixed] diagnostic only, it gates nothing. The first-order
+                                   #   triangulation covariance needs a disparity that is large
+                                   #   against the pixel noise. f * parallax below this many
+                                   #   pixels is reported per sequence, because the configured
+                                   #   stereo.parallax_min_deg is an angle and 0.3 deg is 3.2 px
+                                   #   of disparity on EuRoC but only 1.3 px on TUM-VI.
+  frame_tol_ns: 30000000           # [fixed] 30 ms. A partner frame must fall this close to
+                                   #   t_a + dt. Both datasets run cam0 at 20 Hz, so this admits
+                                   #   the nearest frame and rejects a dropout.
+  stereo_tol_ns: 5000000           # [fixed] 5 ms. cam1 must fall this close to the cam0 stamp.
+                                   #   Both datasets trigger the two cameras together.
+  frame_cache: 24                  # [fixed] frames kept in the reader cache, memory only
+  unused_tumvi:                    # [fixed] TUM-VI sequences that are never used for the head.
+    - corridor1                    #   They are long and their mocap covers only the start and the
+    - corridor2                    #   end. experiments/real_corpus.py --gt-coverage measures it.
+    - corridor3
+    - corridor4
+    - corridor5
+    - magistrale1
+    - magistrale2
+    - magistrale3
+    - magistrale4
+    - magistrale5
+    - magistrale6
+
+real_head:                         # training the covariance head on the real corpus,
+                                   # experiments/real_head_train.py. The loss constants
+                                   # lam_cal, beta_nll, eps, hidden, in_dim and sigma0_init are
+                                   # NOT repeated here. They are read from the covhead: block
+                                   # above, which stays the single source. split_cal is the one
+                                   # exception and is overridden below, with the measurement
+                                   # that forced it.
+  corpus_dir: data/corpus          # [fixed] where experiments/real_corpus.py writes the corpus
+  pose: refined                    # [fixed] relative pose the reported residual is taken
+                                   #   against. Section 2 of docs/gate_c1.md asks for a pose
+                                   #   refined on the same correspondences, so that ground
+                                   #   truth pose error and time offset land in the pose and
+                                   #   not in the residual. The corpus stores that pose as
+                                   #   pair_T_ba_refined, so the residual is recomputed from
+                                   #   X_a and uv_b without rebuilding anything. "gt" uses the
+                                   #   stored e and is run only as a sensitivity check.
+  steps: 4000                      # [fixed] gradient steps per configuration. At 8192
+                                   #   residuals per step and about 280000 training residuals
+                                   #   this is about 117 passes over the training split.
+  batch_residuals: 8192            # [fixed] residuals per gradient step, sampled uniformly
+                                   #   from the training split. The pair id travels with the
+                                   #   batch, so the split calibration estimator never puts
+                                   #   two halves of one pair on the same side.
+  lr: 1.0e-3                       # [fixed] AdamW learning rate, the same as training.lr
+  seed: 0                          # [fixed] seed of the head initialization and of the
+                                   #   minibatch sampler
+  seeds: [0, 1, 2]                 # [fixed] extra seeds the two arms criterion 1 compares are
+                                   #   repeated at. The first entry is the primary run and must
+                                   #   equal seed. The others measure how much of a reported
+                                   #   difference is seed noise, which criterion 1 needs because
+                                   #   its measured gain is a fraction of a percent.
+  split_cal: true                  # [fixed] override of covhead.split_cal for this corpus. With
+                                   #   the biased estimator the term is (mean m2 - 2)^2, whose
+                                   #   bias Var(m2)/N is larger than the quantity it estimates at
+                                   #   8192 residuals per step, measured on this corpus. The
+                                   #   split estimator uses the pair id that travels with the
+                                   #   batch, so two halves of one pair never land on the same
+                                   #   side. covhead.split_cal is left alone so gate G-1 still
+                                   #   reproduces.
+  beta: 0.5                        # [fixed] the Seitzer beta of the full-beta05 arm. It is not
+                                   #   covhead.beta_nll, which is 0 and defines the plain NLL
+                                   #   arms.
+  scene_disjoint:                  # [fixed] the scene-disjoint sensitivity. The pre-registered
+                                   #   split holds out sequences, not scenes, so every held-out
+                                   #   sequence shares its room with a training sequence. These
+                                   #   two runs train on one dataset and test on the other, so
+                                   #   no evaluation keypoint has a near duplicate in training.
+    - {name: euroc-to-tumvi, train_prefix: euroc/, test_prefix: tumvi/}
+    - {name: tumvi-to-euroc, train_prefix: tumvi/, test_prefix: euroc/}
+  n_bins: 6                        # [fixed] quantile bins of an observable for the binned
+                                   #   Spearman correlation, the same count ucslam.train
+                                   #   .evaluate uses. Duplicate quantile edges are merged, so
+                                   #   a nearly constant observable yields fewer bins.
+  min_bin_residuals: 200           # [fixed] a bin with fewer residuals than this is dropped,
+                                   #   and a correlation needs at least 3 surviving bins
+
+derisk:                            # the gate G-2 five arm comparison, experiments/real_derisk.py
+  reference_pose: refined          # [fixed] the relative pose every primary number is measured
+                                   #   against. Section 2 step 5 of docs/gate_c1.md builds the
+                                   #   residual under a pose refined on the same
+                                   #   correspondences and Section 4 asks for the pose NEES
+                                   #   against that refined pose, so the pre-registered
+                                   #   reference is "refined". The ground truth pose is run as a
+                                   #   labelled sensitivity, because it carries a pose error of
+                                   #   0.2 deg in the median, an order of magnitude above the
+                                   #   pose uncertainty any arm reports. The role checkpoints
+                                   #   are picked to match this pose.
+  min_points_per_pair: 12          # [fixed] a pair with fewer residuals than this is dropped.
+                                   #   Six pose degrees of freedom need at least three points,
+                                   #   and a pose NEES on three points is meaningless. Twelve
+                                   #   points give 24 measurements against 6 unknowns.
+  init_rot_deg: 1.0                # [fixed] rotation of the pose the arms start from, in degrees,
+                                   #   applied to the reference pose. A tracking pose optimization
+                                   #   never starts at the answer, so the arms must not either.
+  init_trans_m: 0.03               # [fixed] translation standard deviation of the same start [m].
+                                   #   Comparable to the motion of the shortest offset, 0.10 s.
+  init_seed: 20260920              # [fixed] the stream that draws the start. It depends only on
+                                   #   the pair, so every arm starts from the same pose.
+  scale_lo: 1.0e-8                 # [fixed] lower bracket of the single global scale of an arm
+  scale_hi: 1.0e+8                 # [fixed] upper bracket of the same scale. Outside the bracket
+                                   #   the tool saturates and says so, it never extrapolates.
+  bin_axes: 2                      # [fixed] observables the binned reference bins on
+  bins_per_axis: 4                 # [fixed] quantile bins per observable, so 16 cells
+  bin_min_count: 200               # [fixed] calibration residuals a cell needs before it is
+                                   #   fitted. A thinner cell falls back to the pooled model.
+  bin_floor_px: 0.05               # [fixed] floor [px] on a binned per-axis sigma, after the
+                                   #   known term is subtracted. It keeps the covariance positive
+                                   #   definite where the known term explains the whole residual.
+  bin_axis_max_cross_rho: 0.8      # [fixed] refuse a second binning observable whose rank
+                                   #   correlation with an already chosen one reaches this, so the
+                                   #   two axes are not two names for the same quantity.
+  bin_candidates:                  # [fixed] the observables the binned reference may bin on.
+    - grad_energy                  #   All are partner-view patch statistics or geometry that a
+    - edge_density                 #   deployed system could also compute.
+    - contrast
+    - blur_proxy
+    - cornerness
+    - aniso_geo
+    - depth_m
+    - parallax_deg
+  discrimination_observables:      # [fixed] the observables the rank correlation is REPORTED on
+    - blur_proxy
+    - edge_density
+    - contrast
+    - grad_energy
+    - cornerness
+  discrimination_criterion:        # [fixed] the observables criterion 4 is READ on, which is the
+    - blur_proxy                   #   pair the pre-registration names, blur and edge density.
+    - edge_density                 #   The wider list above is reporting only and never enters a
+                                   #   verdict, so adding a column cannot move the gate.
+  discrimination_bins: 6           # [fixed] quantile bins of that rank correlation, the same
+                                   #   count as experiments/calibration_ablation.py
+  discrimination_min_count: 20     # [fixed] residuals a bin needs before it enters the rank
+                                   #   correlation, the same count as calibration_ablation.py
+  rho_permutation_max_exact: 8     # [fixed] bin counts up to this get an exact permutation p
+                                   #   value for the rank correlation, by enumerating every
+                                   #   ordering. Above it the p value is sampled. At six bins a
+                                   #   rank correlation of 0.5 happens by chance about one time
+                                   #   in seven, so the threshold of criterion 4 needs that p
+                                   #   value printed next to it.
+  rho_permutation_samples: 20000   # [fixed] permutations drawn when the bin count is above the
+                                   #   exact limit
+  n_boot: 10000                    # [fixed] bootstrap resamples of the paired median difference,
+                                   #   the default of eval/stats.py
+  permuted_seeds: [1, 2, 3]        # [fixed] seeds the PERMUTED control is repeated at. The
+                                   #   control shuffles the full head's own covariances across
+                                   #   residuals, once over all residuals and once inside each
+                                   #   pair. It is reporting only and never enters a verdict.
+  blur_lookup_bins: 8              # [fixed] quantile bins of the BLUR-LOOKUP control, an
+                                   #   isotropic lookup on blur_proxy alone fitted on the
+                                   #   calibration half. Reporting only, never a verdict.
+  alpha: 0.05                      # [fixed] significance level of the Holm corrected family
+  checkpoint_dir: runs             # [fixed] where the head checkpoints are looked for
+  checkpoint_glob: real_head_*.pt  # [fixed] the naming the trainer writes
+  wait_minutes: 20                 # [fixed] how long to poll for a missing head checkpoint
+  poll_seconds: 30                 # [fixed] polling interval while waiting
+  criteria:                        # [fixed] the four pass thresholds of docs/gate_c1.md Sec. 5,
+                                   #   copied here so the code and the document cannot drift.
+                                   #   tests/test_real_derisk.py checks them against that file.
+    rot_gain_pct: 25.0             # [fixed] criterion 1, LEARNED-FULL beats LEARNED-SCALAR by at
+                                   #   least this much in median rotation error [percent]
+    anees_level: 0.95              # [fixed] criterion 2, the chi square acceptance level
+    rho_min: 0.5                   # [fixed] criterion 4, Spearman rank correlation floor
+    sigma_p90_over_median_min: 2.5 # [fixed] criterion 4, spread floor of the predicted sigma
+    aniso_median_min: 1.5          # [fixed] criterion 4, median anisotropy floor
+
+depth:                             # the depth-prior characterization of Table tab:depthprior,
+                                   # experiments/depth_prior_bench.py and ucslam/depthnet.py.
+                                   # sigma_0, sigma_rw and sigma_net themselves stay in the
+                                   # depth_prior: block above. This block holds only the
+                                   # constants of the measurement that justifies them.
+  models:                          # [fixed] networks characterized, keys of ucslam.depthnet
+    - da2-metric-indoor-small      #   MetricDepth.SUPPORTED. Depth Anything V2 metric indoor
+    - da2-metric-indoor-base       #   ViT-S and ViT-B through transformers, Metric3D v2 ViT-S
+    - metric3d-vit-small           #   through torch.hub.
+  keyframes_per_seq: 40            # [fixed] frames sampled per sequence, spread evenly over the
+                                   #   cam0 frames that have a cam1 partner within stereo_tol_ns
+  stereo_tol_ns: 5000000           # [fixed] 5 ms, the same as corpus.stereo_tol_ns. cam1 must
+                                   #   fall this close to the cam0 stamp for a stereo reference.
+  topk: 1024                       # [fixed] XFeat detections per view, the same as corpus.topk
+  ref_lognoise_max: 0.3            # [fixed] a stereo landmark whose first-order log-depth noise
+                                   #   sigma_z / z exceeds this is not used as reference. At the
+                                   #   stereo z_max of 40 m the noise is near 50 percent, and such
+                                   #   a point measures the stereo, not the network.
+  min_points_per_kf: 20            # [fixed] a keyframe with fewer reference points than this
+                                   #   contributes no keyframe median, mean or N_eff estimate
+  z_ref_m: 1.0                     # [fixed] the reference depth z_ref of Eq. (signet). With
+                                   #   log 1 = 0 the affine model reads c0 + c1 log z_hat.
+  fit_bins: 8                      # [fixed] quantile bins of log z_hat for the robust (c0, c1)
+                                   #   fit. Per bin the spread is 1.4826 times the median absolute
+                                   #   deviation, the reference variance is subtracted, and a
+                                   #   count-weighted line is fitted through the bins.
+  clip_sigmas: 3.0                 # [fixed] the keyframe means that enter the N_eff estimate are
+                                   #   taken over residuals clipped at the sequence median plus
+                                   #   or minus this many robust spreads, so one wrong stereo
+                                   #   match cannot dominate a keyframe mean
+  latency_warmup: 3                # [fixed] predict calls per network discarded before timing
+  tumvi_rect:                      # [fixed] how a TUM-VI fisheye frame is fed to a perspective network
+    fov_deg: 90.0                  # [fixed] horizontal and vertical field of view of the pinhole
+                                   #   view, cv2.fisheye.initUndistortRectifyMap with R = I
+    size: [512, 512]               # [fixed] rectified image size (w, h). The focal length follows,
+                                   #   f = (w / 2) / tan(fov / 2) = 256 px at 90 degrees.
+  heldout_from: real_corpus        # [fixed] pointer, not a value. The held-out sequences are
+                                   #   experiments.real_corpus.HELDOUT, the five gate G-2 holds
+                                   #   out (MH_04, V1_03, V2_03, room5, room6). (c0, c1) and
+                                   #   sigma_0 are fitted on real_corpus.TRAIN only.
+  figure_subsample: 20000          # [fixed] points per (dataset, network) written to the CSV for
+                                   #   the r against log z_hat figure, drawn with seed 0. The
+                                   #   full point set is in the npz next to it.
+
+orbslam3_baseline:                 # the stock ORB-SLAM3 baseline of milestone M2a, eval/run_orbslam3.py
+                                   # and eval/emit_baseline_tables.py. The binary is upstream
+                                   # UZ-SLAMLab/ORB_SLAM3 at commit 4452a3c, the stock baseline of
+                                   # the paper (its build is not part of this repository). Protocol rules that
+                                   # this block copies are cited by section of docs/protocol.md.
+  upstream_sha: 4452a3c4ab75b1cde34e5505a36ec3f9edcdc4c4   # [fixed] upstream master of 2022-02-10
+  pangolin_tag: v0.6               # [fixed] Pangolin release built into third_party/Pangolin
+  runs: 10                         # [fixed] runs per (mode, sequence) cell, protocol Section 1.
+                                   #   ORB-SLAM3 takes no seed, so the run index stands in for the
+                                   #   seed and the runs differ only through timing and RANSAC.
+  runs_long: 3                     # [fixed] runs per TUM-VI corridor and magistrale sequence, the
+                                   #   reduced count for the long sequences
+  parallel: 5                      # [fixed] runs in flight at once. Operational only, the
+                                   #   examples pace themselves to the image timestamps.
+  nice: 10                         # [fixed] nice level of every ORB-SLAM3 process
+  t_max_diff_s: 0.02               # [fixed] evo association tolerance, protocol Section 3
+  fail_ate_euroc_m: 1.0            # [fixed] protocol Section 2, ATE above this fails an EuRoC run
+  fail_ate_tumvi_frac: 0.05        # [fixed] protocol Section 2, ATE above this fraction of the
+                                   #   path length fails a TUM-VI run
+  fail_lost_s: 1.0                 # [fixed] protocol Section 2, tracking lost longer than this
+                                   #   fails a run. Read from outside as a gap in the saved frame
+                                   #   trajectory, which skips frames in the LOST state.
+  frame_period_s: 0.05             # [fixed] nominal camera period, 20 Hz on EuRoC and TUM-VI. A
+                                   #   gap of g seconds between saved frames is a loss of
+                                   #   g - frame_period_s.
+  stamp_ns_threshold: 1.0e+14      # [fixed] a trajectory stamp above this is in nanoseconds. The
+                                   #   ORB-SLAM3 EuRoC saver writes 1e9 times the time in seconds.
+  gt_gap_split_s: 5.0              # [fixed] the smallest gap in the ground truth that separates
+                                   #   the start segment from the end segment of a TUM-VI corridor
+                                   #   or magistrale sequence. Measured gaps are 41 to 651 s.
+                                   #   Room ground truth has one gap of 1.1 s and stays whole.
+  path_resample_s: 0.1             # [fixed] a trajectory is resampled to this period before its
+                                   #   path length is summed, so mocap or pose noise at 120 Hz or
+                                   #   20 Hz does not inflate the length
+  fail_ate_openloris_m:             # [fixed] A14: ATE above this fails an OpenLORIS run. The correctness
+                                   #   thresholds of the dataset paper (Shi et al., ICRA 2020, Fig. 3 caption)
+    office: 1.0
+    home: 3.0
+    cafe: 3.0
+    corridor: 5.0
+    market: 5.0
+  min_coverage_openloris: 0.8      # [fixed] A14: a run whose keyframe trajectory spans less than this share of
+                                   #   the ground-truth span (late initialization, a late map) fails
+  frame_period_s_openloris: 0.0333 # [fixed] A14: D435i color at 30 Hz, the frame period of the gap rule
+  timeout_factor: 2.0              # [fixed] a run is killed after timeout_factor times the sequence
+                                   #   duration plus timeout_extra_s and counts as failed
+  timeout_extra_s: 180.0           # [fixed] vocabulary load, IMU initialization and shutdown
+  timeout_factor_a15: 6.0          # [fixed] A15 note of 2026-10-03: the A15 EuRoC reruns (DPV-SLAM, MASt3R-SLAM) are killed
+                                   #   after this times the duration plus timeout_extra_s, as on OpenLORIS (A14)
+  timeout_factor_openloris: 6.0    # [fixed] A14 note of 2026-10-03: OpenLORIS runs of every runner are killed after this
+                                   #   times the duration plus timeout_extra_s. DM-VIO and VINS-Fusion ran at 2.4 times real
+                                   #   time in the check runs, so the factor 2 would kill the long corridor and market runs
+  credential_min_sequences: 9      # [fixed] protocol Section 6, published median inside our own
+                                   #   run-to-run interquartile range on at least this many of the
+                                   #   11 EuRoC sequences
+
+init:                              # Algorithm 1 and the base system's timer rule, Python
+                                   # reference implementation in ucslam/vi_init.py and
+                                   # experiments/init_study.py. It is not the C++ system.
+                                   # sigma_0 of the anchoring floor is depth_prior.sigma_0 above.
+  frame_hz: 10.0                   # [fixed] cam0 frames fed to the visual stage, every second
+                                   #   frame of the 20 Hz stream. Every such frame is a keyframe
+                                   #   of the inertial MAP, so 2 s hold 20 keyframes, twice the
+                                   #   10 the base system needs before its first inertial init.
+  horizon_s: 15.0                  # [fixed] longest window before a policy reports a non-commit.
+                                   #   It is the time of the base system's last scheduled
+                                   #   refinement, protocol Section 9 H2.
+  step_s: 0.5                      # [fixed] window extension step of Alg. 1 step 4
+  topk: 1024                       # [fixed] XFeat detections per frame, the same as training.topk
+  desc_ratio: 0.8                  # [fixed] descriptor distance ratio test, the same as stereo.ratio
+  desc_mutual: true                # [fixed] mutual nearest neighbour in the descriptor matching
+  track_ttl_frames: 20             # [fixed] a map point unseen for longer than this many frames
+                                   #   (2 s) leaves the local map the new frame is matched against
+  min_bearing_z: 0.2               # [fixed] a keypoint whose bearing has a smaller z component is
+                                   #   dropped. On the 195 degree TUM-VI fisheye this removes the
+                                   #   rim beyond 78 degrees off axis, which project() cannot handle
+  ransac_px: 2.0                   # [fixed] essential matrix RANSAC threshold [px]. Applied in
+                                   #   normalized coordinates as ransac_px / fx. The base system
+                                   #   uses the 95 percent 2 DoF gate, 1.96 px at 1 px noise
+  ransac_prob: 0.999               # [fixed] RANSAC confidence
+  sigma_px: 1.0                    # [fixed] isotropic pixel noise of the pyramid model at level
+                                   #   0, Eq. (pyramidcov). It weights PnP and the window BA
+  huber: 2.0                       # [fixed] Huber radius on the whitened reprojection norm in PnP
+                                   #   and in the window BA. 2 sigma
+  min_ref_matches: 100             # [fixed] the base system moves its initialization reference
+                                   #   frame when fewer matches than this survive
+  min_init_points: 50              # [fixed] triangulated points a two-view initialization needs,
+                                   #   the base system's TwoViewReconstruction floor
+  init_parallax_deg: 1.0           # [fixed] median parallax of the initializing points [deg],
+                                   #   the base system's minParallax
+  tri_parallax_deg: 1.0            # [fixed] parallax a new map point needs before it is
+                                   #   triangulated [deg]
+  min_pnp_points: 15               # [fixed] PnP inliers a frame needs. Below it tracking is lost
+                                   #   and the visual stage restarts from the next frame, as the
+                                   #   base system resets its map during initialization
+  ba_iters: 6                      # [fixed] Levenberg-Marquardt iterations of the window BA at
+                                   #   each step. The BA is warm started, so few are needed
+  ba_gauge_weight: 1.0e+3          # [fixed] weight of the soft gauge that pins the initializing
+                                   #   baseline to unit length. It fixes the scale gauge of the
+                                   #   monocular BA and nothing else
+  depth_model: da2-metric-indoor-small   # [fixed] the smallest network of depth.models
+  depth_stride_s: 0.5              # [fixed] keyframe spacing at which the depth network runs for
+                                   #   the anchoring. Every fifth 10 Hz keyframe
+  depth_rho_within: null           # [fitted-per-domain] within-keyframe correlation of the
+                                   #   log-depth residuals that deflates N to N_eff. null means it
+                                   #   is estimated inside the window from the keyframe means, the
+                                   #   same random-effects estimator the depth bench uses on its
+                                   #   stereo reference. The bench's per-domain value replaces it
+  anchor_min_points: 30            # [fixed] residuals the anchoring needs before its median is
+                                   #   used. Below it the window has no depth prior yet
+  prior_bg_sigma: 0.1              # [fixed] gyroscope bias prior std [rad/s] of the inertial MAP,
+                                   #   the base system's information 1e2 at its first monocular
+                                   #   inertial initialization (Campos 2020 as in ORB-SLAM3)
+  prior_ba_sigma: 1.0e-5           # [fixed] accelerometer bias prior std [m/s^2], the base
+                                   #   system's information 1e10 at the same point. It pins the
+                                   #   bias, so the sigma_ba commit test cannot fail under it. The
+                                   #   loose value below is run as a labelled sensitivity
+  prior_ba_sigma_loose: 0.1        # [fixed] the sensitivity value. 0.1 m/s^2 is the order of the
+                                   #   EuRoC ground-truth accelerometer biases (0.03 to 0.55 m/s^2
+                                   #   per axis in V1_01 and MH_01), so it is a prior that does
+                                   #   not pretend to know the bias
+  timer_first_s: 2.0               # [fixed] the base rule: inertial init once 2 s of keyframes
+                                   #   exist after the first keyframe
+  timer_min_kf: 10                 # [fixed] and at least 10 keyframes
+  timer_min_scale: 0.1             # [fixed] the base system discards an inertial init whose scale
+                                   #   is below this and tries again at the next keyframe
+  timer_refine:                    # [fixed] the base system's refinement schedule after its
+                                   #   first init, time since the first keyframe and the bias
+                                   #   prior stds of each stage. null means no prior
+    - {at_s: 5.0, bg_sigma: 1.0, ba_sigma: 3.1623e-3}   # information 1 and 1e5
+    - {at_s: 15.0, bg_sigma: null, ba_sigma: null}      # no priors
+  tau_s: 0.15                      # [fixed] commit threshold on the marginal std of log s. It sits
+                                   #   above the sigma_0 = 0.10 floor that Cor. (floor) puts on any
+                                   #   depth-anchored scale without excitation, so the test can
+                                   #   pass without excitation, and it still refuses an anchoring
+                                   #   whose robust spread over sqrt(N_eff) exceeds 15 percent
+  tau_g_deg: 1.0                   # [fixed] commit threshold on the gravity tilt std [deg]. A
+                                   #   1 degree tilt injects 9.81 sin(1 deg) = 0.17 m/s^2 of
+                                   #   fictitious acceleration, the order of the accelerometer
+                                   #   bias the later refinement absorbs
+  tau_b: 0.05                      # [fixed] commit threshold on the accelerometer bias std
+                                   #   [m/s^2]. A bias error of this size tilts the recovered
+                                   #   gravity by 0.05 / 9.81 rad, 0.3 degrees, a third of tau_g,
+                                   #   so the two tests are consistent with each other
+  sweep_factors: [0.5774, 1.0, 1.7321]   # [fixed] each threshold is swept at these multiples,
+                                   #   a threefold range, protocol Section 6
+  success_scale_err_pct: 10.0      # [fixed] proposed success definition, part 1: the scale at
+                                   #   commit is within 10 percent of the ground truth path
+                                   #   length ratio. Ten percent is sigma_0, the trust radius the
+                                   #   estimator itself puts on a depth-anchored scale, and a
+                                   #   10 percent scale error over the 2 s of a window moves a
+                                   #   1 m/s trajectory by 0.2 m, inside the 1 m failure rule
+  success_tilt_deg: 2.0            # [fixed] part 2: the gravity tilt error at commit is below
+                                   #   2 degrees, twice tau_g, so a commit that passed the
+                                   #   predicted-tilt test with a calibrated marginal succeeds
+  success_needs_commit_s: 15.0     # [fixed] part 3: the commit happened inside the horizon
+  scale_error_pcts: [3.0, 5.0, 10.0, 20.0, 50.0]  # [fixed] thresholds at which the scale error
+                                   #   distribution is tabulated, so the choice above is transparent
+
+ucslam:                            # the UCSLAM.* block of the ORB-SLAM3 fork settings files,
+                                   # docs/fork_design.md Sec. 0 and Sec. 2. scripts/gen_ucslam_yaml.py
+                                   # copies a stock camera YAML and appends these values as
+                                   # UCSLAM.<Key>, which cpp/ucslam/src/Settings.cc parses. A
+                                   # string of the form "block.key" is a pointer into this file,
+                                   # not a value, and the generator resolves it. Every default in
+                                   # Settings.cc reproduces stock ORB-SLAM3 when the key is absent.
+  prior_net: 1                     # [fixed] UCSLAM.PriorNet. 1 starts the PriorNet thread, which
+                                   #   reads the depth cache and attaches z_hat and sigma_D to every
+                                   #   keyframe. 0 is the stock four thread system.
+  depth_dir: data/depth            # [fixed] UCSLAM.DepthDir. Root of the cache written by
+                                   #   experiments/precompute_depth.py, laid out as
+                                   #   <dir>/<dataset>/<seq>/<model>/<timestamp_ns>.npy
+  depth_model: da2-metric-indoor-base   # [fixed] UCSLAM.DepthModel. The ViT-B network of depth.models.
+                                   #   Chosen from experiments/out/depth_prior_bench.md, where it has
+                                   #   the smallest EuRoC log-depth bias (fit split minus 0.015) of
+                                   #   the three networks and a TUM-VI bias that a constant removes.
+  use_depth_factor: 0              # [fixed] UCSLAM.UseDepthFactor. 0 until the local BA integration
+                                   #   of docs/fork_design.md Sec. 6 step 4 lands. With 0 no vertex
+                                   #   and no edge is added and the optimizer path is the stock one.
+  z_ref_m: depth.z_ref_m           # [fixed] UCSLAM.ZRef, pointer. z_ref of Eq. (signet), 1 m.
+  sigma_0: depth_prior.sigma_0     # [fixed] UCSLAM.Sigma0, pointer. The a_0 prior std, 0.1. The bench
+                                   #   measured sigma_0 across sequences of 0.207 on EuRoC and
+                                   #   0.038 on TUM-VI for this network on the fit split (below),
+                                   #   so on EuRoC the fixed value is optimistic by a factor 2.
+  sigma_rw: depth_prior.sigma_rw   # [fixed] UCSLAM.SigmaRW, pointer. Random walk density, 0.02 s^-1/2
+  ess_deflation: 1                 # [fixed] UCSLAM.ESSDeflation. 1 scales the depth information of a
+                                   #   keyframe by neff_over_n below, paper Sec. VI-C. 0 is the
+                                   #   ablation row.
+  max_depth_prior_points: 100      # [fixed] UCSLAM.MaxDepthPriorPoints. Cap on map points created
+                                   #   from the depth prior per keyframe, in order of increasing
+                                   #   depth. 100 is the count the stock RGB-D path creates beyond
+                                   #   the close threshold in Tracking::CreateNewKeyFrame.
+  init_policy: timer               # [fixed] UCSLAM.InitPolicy. timer is stock, ours is Algorithm 1,
+                                   #   wait is ours without depth anchoring, docs/fork_design.md Sec. 3
+  init_min_window_s: init.timer_first_s   # [fixed] UCSLAM.InitMinWindow, pointer. Shortest window
+                                   #   Algorithm 1 tests, 2 s, the base system's first init time
+  init_max_window_s: init.horizon_s       # [fixed] UCSLAM.InitMaxWindow, pointer. 15 s. Without a
+                                   #   commit by then the fork falls back to the stock timer
+  tau_s: init.tau_s                # [fixed] UCSLAM.TauS, pointer. Commit threshold on std of log s
+  tau_g_deg: init.tau_g_deg        # [fixed] UCSLAM.TauG, pointer. Commit threshold on tilt std [deg]
+  tau_ba: init.tau_b               # [fixed] UCSLAM.TauBa, pointer. Commit threshold on ba std [m/s^2]
+  dump_marginals: 0                # [fixed] UCSLAM.DumpMarginals. 1 writes the joint pose marginals
+                                   #   after every local inertial BA for eval/nees.py
+  cov_source: pyramid              # [fixed] UCSLAM.CovSource. pyramid is bit-identical to stock,
+                                   #   learned reads the per-frame 2x2 cache, docs/fork_design.md Sec. 5
+  sigma_merge: depth_prior.sigma_0 # [fixed] UCSLAM.SigmaMerge, pointer. Std of the relative log-scale
+                                   #   prior that re-anchors an absorbed Atlas map to the surviving
+                                   #   one. Set equal to sigma_0 because each map's a_0 carried that
+                                   #   trust radius. The chain merge step (Sec. 6 step 5) confirms it.
+  queue_match_tol_ms: 1.0          # [fixed] UCSLAM.DepthMatchTolMs. A cached map is used for a keyframe
+                                   #   when its stamp is within this of the keyframe stamp. The
+                                   #   keyframe stamp is a double in seconds, so the nanosecond
+                                   #   file name is recovered only to about 200 ns. Frames are 50 ms apart.
+  per_domain:                      # [fitted-per-domain] the four per-domain constants of the depth
+                                   #   prior, read from experiments/out/depth_prior_bench.json for
+                                   #   depth_model on the fit split (real_corpus.TRAIN, never held-out).
+                                   #   The generator picks the domain from the dataset of the YAML.
+    euroc:                         # [fitted-per-domain] 8 fit sequences, 75613 points
+      sigma_net_c0: 0.075          # [fitted-per-domain] UCSLAM.SigmaNetC0, Eq. (signet), deflated fit
+      sigma_net_c1: 0.055          # [fitted-per-domain] UCSLAM.SigmaNetC1, per unit of log z_hat
+      log_bias: -0.015             # [fitted-per-domain] UCSLAM.LogBias. Median of log z_hat minus
+                                   #   log z_ref. PriorNet stores z_hat times exp(minus LogBias).
+      neff_over_n: 0.008           # [fitted-per-domain] UCSLAM.NeffOverN. Median N_eff / N per keyframe
+    tumvi:                         # [fitted-per-domain] 4 fit rooms, 17003 points
+      sigma_net_c0: 0.078          # [fitted-per-domain] UCSLAM.SigmaNetC0
+      sigma_net_c1: 0.014          # [fitted-per-domain] UCSLAM.SigmaNetC1
+      log_bias: 0.796              # [fitted-per-domain] UCSLAM.LogBias. The network reads TUM-VI
+                                   #   depth 2.2 times too far, so a constant correction is needed.
+      neff_over_n: 0.022           # [fitted-per-domain] UCSLAM.NeffOverN
+    openloris:                     # [fitted-per-domain] A14: fit split office1-1, corridor1-1, home1-1, cafe1-1, market1-1, 142689 points, reference the D435i aligned depth
+      sigma_net_c0: 0.1256           # [fitted-per-domain] UCSLAM.SigmaNetC0 (experiments/out/openloris_depth_calib.json)
+      sigma_net_c1: -0.03228           # [fitted-per-domain] UCSLAM.SigmaNetC1
+      log_bias: 0.1532               # [fitted-per-domain] UCSLAM.LogBias
+      neff_over_n: 0.0039           # [fitted-per-domain] UCSLAM.NeffOverN
+  precompute:                      # [fixed] experiments/precompute_depth.py, the offline PriorNet cache
+    downscale: 2                   # [fixed] the map is stored at 1/downscale of the network input
+                                   #   resolution, averaged over downscale x downscale blocks
+                                   #   (cv2.INTER_AREA). Pixel centres are aligned, so a network
+                                   #   input pixel u maps to (u + 0.5) / downscale - 0.5.
+    dtype: float16                 # [fixed] storage type of every map. Relative step 1e-3 at 8 m,
+                                   #   below the 0.075 log-depth noise floor of sigma_net
+    z_min_m: 0.05                  # [fixed] a predicted depth at or below this is stored as 0 and
+                                   #   means no prediction at that pixel
+    z_max_m: 80.0                  # [fixed] the float16 maximum is 65504, so depths are clipped
+                                   #   here first. The stereo reference stops at 40 m anyway.
+    tumvi_rect: depth.tumvi_rect   # [fixed] pointer. TUM-VI frames are rectified exactly as the
+                                   #   depth bench does, with these values
+    latency_warmup: depth.latency_warmup   # [fixed] pointer. predict calls discarded before timing
+  variants:                        # [fixed] named settings variants for runs and ablations.
+                                   #   scripts/gen_ucslam_yaml.py writes one file per target and
+                                   #   variant, configs/orbslam3/<target>_<variant>.yaml. A variant
+                                   #   overrides UCSLAM keys only. Every other value stays the one above.
+    depth_fix2:                    # [fixed] depth_fix2_dump without the covariance dump, for the TUM-VI corridor
+                                   #   and magistrale sequences, where the dense inversion of the dump does not finish
+      UseDepthFactor: 1            # [fixed] on
+      ImuInitHandoff: 1            # [fixed] on
+      DepthGateMode: 1             # [fixed] gate at the initial estimate
+      DepthEdgesStereoObs: 0       # [fixed] no depth edge where the stereo pair measured the depth
+    abl2_nodepth:               # [fixed] ablation of depth_fix2: no depth factor, no PriorNet, no depth-prior points
+      UseDepthFactor: 0            # [fixed] off
+      PriorNet: 0                  # [fixed] off
+      MaxDepthPriorPoints: 0       # [fixed] none
+      ImuInitHandoff: 1            # [fixed] on
+      DepthGateMode: 1             # [fixed] gate at the initial estimate
+      DepthEdgesStereoObs: 0       # [fixed] the stereo rule
+    abl2_global:                # [fixed] ablation of depth_fix2: one global log-scale instead of the chain (sigma_rw near 0)
+      UseDepthFactor: 1            # [fixed] on
+      SigmaRW: 0.0001              # [fixed] chain drift 0.003 over 1000 s, one shared scale
+      ImuInitHandoff: 1            # [fixed] on
+      DepthGateMode: 1             # [fixed] gate at the initial estimate
+      DepthEdgesStereoObs: 0       # [fixed] the stereo rule
+    abl2_pinned:                   # [fixed] ablation of depth_fix2: no scale correction, every a_k held at 0
+      UseDepthFactor: 1            # [fixed] on
+      LogScaleFixed: 1             # [fixed] a_k = 0, the bias-corrected network depth taken as metric
+      ImuInitHandoff: 1            # [fixed] on
+      DepthGateMode: 1             # [fixed] gate at the initial estimate
+      DepthEdgesStereoObs: 0       # [fixed] the stereo rule
+    abl2_noess:                 # [fixed] ablation of depth_fix2: no N_eff deflation
+      UseDepthFactor: 1            # [fixed] on
+      ESSDeflation: 0              # [fixed] every depth measurement counted as independent
+      ImuInitHandoff: 1            # [fixed] on
+      DepthGateMode: 1             # [fixed] gate at the initial estimate
+      DepthEdgesStereoObs: 0       # [fixed] the stereo rule
+    abl2_nodpp:                 # [fixed] ablation of depth_fix2: no depth-prior map points
+      UseDepthFactor: 1            # [fixed] on
+      MaxDepthPriorPoints: 0       # [fixed] none created
+      ImuInitHandoff: 1            # [fixed] on
+      DepthGateMode: 1             # [fixed] gate at the initial estimate
+      DepthEdgesStereoObs: 0       # [fixed] the stereo rule
+    depth_fix2_dump:               # [fixed] depth_fix_dump plus the stereo rule of docs/fork_design.md Sec. 7
+                                   #   (stereo-inertial study): an observation whose keypoint has a stereo
+                                   #   depth gets no depth edge. A monocular map has no such observation, so
+                                   #   on mono-inertial and TUM-VI this variant runs the same code as depth_fix_dump
+      UseDepthFactor: 1            # [fixed] on
+      ImuInitHandoff: 1            # [fixed] on
+      DepthGateMode: 1             # [fixed] gate at the initial estimate
+      DumpMarginals: 1             # [fixed] write marginals/ at shutdown
+      DepthEdgesStereoObs: 0       # [fixed] no depth edge where the stereo pair measured the depth
+    a11r_capgatex_dump:            # [fixed] protocol A11 (variant V2X, adopted 2026-10-02): the test arm on EuRoC and the
+                                   #   TUM-VI rooms, the Mono-VI rows of the main tables. depth_fix3_dump plus the
+                                   #   young-map gate (attempt 07) and the faster inertial local BA, arm X (attempt 08)
+      UseDepthFactor: 1            # [fixed] on
+      ImuInitHandoff: 1            # [fixed] on
+      DepthGateMode: 1             # [fixed] gate at the initial estimate
+      DumpMarginals: 1             # [fixed] write marginals/ at shutdown
+      DepthEdgesStereoObs: 0       # [fixed] no depth edge where the stereo pair measured the depth
+      ScaleRefineMaxLog: 0.01      # [fixed] cap of attempt 04
+      LogInitState: 1              # [fixed] prints the young_map_init line, changes nothing
+      YoungMapScaleGate: 1.0       # [fixed] young-map gate tau on |a| after the first inertial local BA (attempt 06)
+      YoungMapBiasGate: 0.0905     # [fixed] young-map gate beta [rad/s] on the vertical gyro bias (attempt 07)
+      DepthEdgeGateAtAdd: 1        # [fixed] arm X: no depth edge where the gate rejects at creation (attempt 08)
+      LbaMargDiagOnly: 1           # [fixed] arm X: the marginal step solves only for the a_k diagonal (attempt 08)
+      DepthEdgeSubsampleEps: 0.0   # [fixed] arm XS off
+      DiagMargCheck: 0             # [fixed] off
+      DiagSubsampleCheck: 0        # [fixed] off
+      YoungMapGateShadow: 0        # [fixed] the gate acts
+    a11r_capgatex:                 # [fixed] protocol A11: a11r_capgatex_dump without the covariance dump, for the
+                                   #   TUM-VI corridor and magistrale sequences
+      UseDepthFactor: 1            # [fixed] on
+      ImuInitHandoff: 1            # [fixed] on
+      DepthGateMode: 1             # [fixed] gate at the initial estimate
+      DepthEdgesStereoObs: 0       # [fixed] no depth edge where the stereo pair measured the depth
+      ScaleRefineMaxLog: 0.01      # [fixed] cap of attempt 04
+      LogInitState: 1              # [fixed] prints the young_map_init line, changes nothing
+      YoungMapScaleGate: 1.0       # [fixed] young-map gate tau (attempt 06)
+      YoungMapBiasGate: 0.0905     # [fixed] young-map gate beta [rad/s] (attempt 07)
+      DepthEdgeGateAtAdd: 1        # [fixed] arm X (attempt 08)
+      LbaMargDiagOnly: 1           # [fixed] arm X (attempt 08)
+      DepthEdgeSubsampleEps: 0.0   # [fixed] arm XS off
+      DiagMargCheck: 0             # [fixed] off
+      DiagSubsampleCheck: 0        # [fixed] off
+      YoungMapGateShadow: 0        # [fixed] the gate acts
+  diag: 0                          # [fixed] UCSLAM.Diag. 1 writes ucslam_track.csv (one row per frame) in
+                                   #   the run directory, a [UCSLAM] diag line per local BA, the scale of
+                                   #   every IMU initialization, a stack trace on a crash, and at shutdown
+                                   #   log z_map - log z_hat per keyframe. Logging only. docs/fork_design.md Sec. 7
+  depth_edge_min_obs: 1            # [fixed] UCSLAM.DepthEdgeMinObs. A map point gets depth edges only when
+                                   #   at least this many keyframes observe it. 1 is the design of Sec. 2
+  depth_edges_fixed_kfs: 1         # [fixed] UCSLAM.DepthEdgesFixedKFs. 0 drops the depth edges of the fixed
+                                   #   keyframes of a local BA. 1 is the design of Sec. 2
+  chain_fixed_boundary: 1          # [fixed] UCSLAM.ChainFixedBoundary. 0 gives the fixed keyframes of a local
+                                   #   BA no a_k node, so the chain of the window is held only by the
+                                   #   detached prior on its oldest node. 1 is the design of Sec. 2
+  log_scale_fixed: 0               # [fixed] UCSLAM.LogScaleFixed. 1 holds every a_k at 0, the ablation that takes
+                                   #   the bias-corrected network depth as metric (docs/fork_design.md Sec. 8)
+  imu_init_handoff: 0              # [fixed] UCSLAM.ImuInitHandoff. 1 drains the keyframe queue again under the
+                                   #   map mutex before an IMU initialization rotates and scales the map, and
+                                   #   hands the newest keyframe to the tracker. 0 is stock, whose handoff
+                                   #   races with keyframe insertion during the initialization (Sec. 7)
+  depth_gate_mode: 0               # [fixed] UCSLAM.DepthGateMode. 0 gates the depth edges after the solve of
+                                   #   a local BA and solves again without them, the design of Sec. 2.
+                                   #   1 applies the same gate at the initial estimate and solves once.
+                                   #   2 first moves every free a_k of the window to the median of
+                                   #   log z - log z_hat over its depth edges on points that are not
+                                   #   depth-prior points, then gates as 1 (Sec. 7, stereo-inertial)
+  depth_edges_stereo_points: 1     # [fixed] UCSLAM.DepthEdgesStereoPoints. 0 gives a map point that some
+                                   #   keyframe observes in stereo no depth edge. 1 is the design of Sec. 2
+  log_scale_seed: 0                # [fixed] UCSLAM.LogScaleSeed. 1 starts a_k of a keyframe that no local BA
+                                   #   has estimated at the median of log z - log z_hat over its geometric
+                                   #   points (seen twice or in stereo, not depth-prior points), for its
+                                   #   depth-prior points and its chain node. 0 starts it at the predecessor's
+                                   #   a_k, or at 0 when the predecessor has none either (Sec. 7)
+  depth_edges_stereo_obs: 1        # [fixed] UCSLAM.DepthEdgesStereoObs. 0 gives an observation whose keypoint has a
+                                   #   stereo depth in its keyframe no depth edge. A monocular map has no such
+                                   #   observation, so 0 changes nothing there. 1 is the design of Sec. 2
+  diag_lba_delay_ms: 0             # [fixed] UCSLAM.DiagLbaDelayMs. Diagnostic of the stereo study (Sec. 7): the
+                                   #   local inertial BA holds its solution this long before the write back.
+                                   #   0 is off and the only value any benchmark variant uses
+  scale_refine_max_log: 0.0        # [fixed] UCSLAM.ScaleRefineMaxLog. c > 0 caps the applied IMU-only scale
+                                   #   refinements of a map at exp(+-c) in total (protocol A9, docs/fork_design.md
+                                   #   Sec. 11 attempt 04). 0 is the base behaviour
+
+marginals:                         # the posterior covariance dump, docs/fork_design.md Sec. 4, written at
+                                   # shutdown when UCSLAM.DumpMarginals is 1, format ucslam-marginals-1.
+                                   # cpp/ucslam/src/UcslamMarginals.cc holds these values as C++
+                                   # constants (the stock tree gets the same file through patch 0003),
+                                   # and tests/test_marginals_dump.py checks that they agree.
+  out_dir: marginals               # [fixed] dump directory, relative to the working directory of the
+                                   #   binary. eval/run_orbslam3.py runs it in the run directory.
+  gauge_sigma: 1.0e-10             # [fixed] std of the prior on all six tangent components of the first
+                                   #   keyframe's pose, which fixes the gauge. With an IMU, gravity makes
+                                   #   roll and pitch observable, so this also conditions on the first
+                                   #   keyframe's roll and pitch.
+  point_rank_rtol: 1.0e-12         # [fixed] a map point's 3x3 information block is inverted on its
+                                   #   eigenvalues above this times the largest one. A point seen once
+                                   #   leaves one eigenvalue at round-off, and that direction carries no
+                                   #   information on any other variable.
+  thread_wait_s: 60.0              # [fixed] longest wait at shutdown for local mapping, loop closing and
+                                   #   a running global BA to finish before the problem is built
+
+nees:                              # relative-pose NEES from the posterior covariance dump, protocol
+                                   # Section 7, eval/nees_from_dump.py and eval/emit_anees_table.py.
+                                   # The sigma_gt values are the proposal for amendment A1, which is
+                                   # still open in docs/protocol.md. They were set on 2026-09-25 before
+                                   # any NEES of a real run was computed. The fork does not read this block.
+  dump_format: ucslam-marginals-1  # [fixed] the "format" string of marginals/meta.json
+  horizons_s: [1.0, 3.0, 10.0]     # [fixed] protocol Section 7. H1 reads the 3 s horizon
+  pair_tol_frac: 0.25              # [fixed] a pair is dropped when its gap exceeds 1.25 times the horizon
+  gt_scale_factors: [0.5, 1.0, 2.0]  # [fixed] multipliers of Sigma_gt. 1 is the headline cell, 0.5 and 2
+                                   #   are the sensitivity rows of Section 7
+  rate_half_window_s: 0.02         # [fixed] half window of the central difference of the interpolated
+                                   #   ground truth that gives omega_b and v_b for the time-sync term
+  sigma_gt:                        # [fixed] per-pose ground-truth error, diag(sigma_rot^2, sigma_pos^2) plus
+                                   #   sigma_dt^2 [omega_b, v_b][omega_b, v_b]^T, one independent block per pose
+    euroc:
+      sigma_pos_m: 0.001           # [fixed] Burri et al., IJRR 35(10) 2016, abstract: millimetre accurate
+                                   #   position ground truth (Leica MS50 laser tracker, MH). Schubert et al.,
+                                   #   IROS 2018, Table I, lists EuRoC ground truth as acc ~1 mm for the
+                                   #   laser tracker and the Vicon rooms.
+      sigma_rot_deg: 0.01          # [fixed] no published figure. The ground-truth orientation is the batch
+                                   #   estimate driven by the IMU (state_groundtruth_estimate0/sensor.yaml:
+                                   #   "The orientation is only observed by the IMU" on MH). Its white jitter is
+                                   #   1e-4 deg (experiments/out/anees_gt_check.md). The ADIS16448 angle random
+                                   #   walk, 1.6968e-4 rad/s/sqrt(Hz) in imu0/sensor.yaml, gives 0.0097 deg over 1 s.
+      sigma_dt_s: 0.001            # [fixed] the batch solution estimated the Leica or Vicon time offset
+                                   #   (sensor.yaml "including time offset estimation"). The dataset page says
+                                   #   the Vicon has no device timestamps. No residual is published. 1 ms is the
+                                   #   TUM-VI value below. The orientation is on the IMU clock (lag RMS
+                                   #   0.14 ms, anees_gt_check.md), so the rotation part of this term over-covers.
+    tumvi:
+      sigma_pos_m: 0.001           # [fixed] Schubert et al., IROS 2018, Table I: marker position acc ~1 mm
+                                   #   (static case). The measured white jitter of dso/gt_imu.csv is 0.09 mm
+                                   #   per axis (anees_gt_check.md), so the rest is slow error.
+      sigma_rot_deg: 0.05          # [fixed] no published figure. Measured white jitter of dso/gt_imu.csv
+                                   #   against the gyro, 0.034 to 0.060 deg per axis, median 0.044
+                                   #   (anees_gt_check.md). Shu et al., arXiv 2507.12920, report inter-frame
+                                   #   mocap rotation errors up to 0.1 deg, consistent with this value.
+      sigma_dt_s: 0.001            # [fixed] Schubert et al., IROS 2018, Sec. IV-B: the mocap to IMU offset is
+                                   #   fitted per sequence on angular velocity (100 us grid and a parabola).
+                                   #   The residual lag of dso/gt_imu.csv against the gyro over 62 windows of
+                                   #   10 s has RMS 1.14 ms (anees_gt_check.md).
+
+init_recal:                        # protocol amendment A5, the recalibration of the commit statistic of
+                                   # Algorithm 1. experiments/init_study.py phases extract-alt, recal-solve,
+                                   # recal-trim and recal-report, and ucslam/vi_init.py joint_marginal.
+                                   # Python reference implementation, not the C++ system. The fork does
+                                   # not read this block.
+  a5_band: 2.0                     # [fixed] amendment A5: the predicted sigma of log s must match the
+                                   #   measured one within this factor. A tilt or bias marginal whose
+                                   #   predicted over measured ratio lies outside the same band gets a
+                                   #   factor of its own
+  tuning_sequences: [MH_01_easy, MH_02_easy, MH_03_medium]   # [fixed] the tuning split of protocol
+                                   #   Section 6. The CAL_TUNING variant fits its factor on these only
+  len_bins_s: [2.0, 4.0, 8.0, 15.0]  # [fixed] window-length bins of the calibration drift table [s]
+  alt_model: metric3d-vit-small    # [fixed] the second anchoring network of the sensitivity row, run on
+                                   #   the EuRoC window frames only. Its log bias and rho come from the
+                                   #   depth bench fit split, experiments/out/depth_prior_bench.json
+  point_sv_rtol: 1.0e-6            # [fixed] a singular value of a landmark's whitened reprojection
+                                   #   Jacobian below this times its largest is a direction the views do
+                                   #   not constrain. It is dropped from the landmark elimination. The
+                                   #   square root of the 1e-12 eigenvalue threshold of the inertial MAP
+  anchor_point_sv_min: 1.0e-3      # [fixed] a landmark whose smallest over largest singular value is
+                                   #   below this, a parallax near 0.1 degree for two views, has no map
+                                   #   depth. It leaves the gradient of the depth anchor
+
+pseudo_rgbd:                       # the pseudo-RGB-D baseline of protocol H3. Stock ORB-SLAM3 RGB-D-inertial
+                                   # (System::IMU_RGBD) fed the depth cache of ucslam.depth_model with the
+                                   # per-domain log bias of ucslam.per_domain removed. experiments/make_pseudo_depth.py
+                                   # writes the depth PNGs and configs/orbslam3/pseudo_rgbd_<dataset>.yaml,
+                                   # cpp/pseudo_rgbd/ is the driver, eval/run_orbslam3.py mode rgbd_inertial runs it.
+  out_dir: data/pseudo_depth       # [fixed] root of <dataset>/<seq>/depth/<t_ns>.png and, for TUM-VI, of the
+                                   #   rectified frames <dataset>/<seq>/cam0_rect/<t_ns>.png
+  depth_map_factor: 1000.0         # [fixed] DepthMapFactor. PNG value per metre, uint16 millimetres. A depth
+                                   #   that rounds above 65535 mm is written as 0, which means no depth.
+  pixel_sigma_px: 1.0              # [fixed] std of the virtual right coordinate that the stock stereo edges
+                                   #   assume at pyramid level 0 (ORBextractor mvLevelSigma2[0] = 1)
+  match_depth_stride: 20           # [fixed] every this many cached frames of a fit sequence enter match_depth_m
+  match_depth_pixel_stride: 4      # [fixed] every this many map pixels per direction enter match_depth_m
+  match_depth_m:                   # [fitted-per-domain] median predicted depth, bias removed, over the fit split
+                                   #   (real_corpus.TRAIN) of the cache. The virtual baseline makes the stock
+                                   #   right-pixel noise equal sigma_net of Eq. (signet) at this depth, and
+                                   #   ThDepth puts the close threshold here. make_pseudo_depth.py --fit-match-depth
+    euroc: 3.091                   # [fitted-per-domain] 8 fit sequences, 1050 maps, 5.92 M pixels, IQR 1.97 to 4.62 m
+    tumvi: 1.513                   # [fitted-per-domain] 4 fit rooms, 541 maps, 2.22 M pixels, IQR 0.98 to 2.12 m
+  stock_yaml:                      # [fixed] the stock file whose camera, IMU and ORB values each settings file copies
+    euroc: Monocular-Inertial/EuRoC.yaml   # [fixed] the file of the stock and UC-SLAM mono-inertial EuRoC runs
+    tumvi: Monocular-Inertial/TUM-VI.yaml  # [fixed] the same for TUM-VI. Its fisheye becomes the rectified pinhole
+  clahe:                           # [fixed] the image preprocessing of the stock example of the domain
+    euroc: 0                       # [fixed] mono_inertial_euroc feeds the frame as recorded
+    tumvi: 1                       # [fixed] mono_inertial_tum_vi applies CLAHE, clip limit 3.0, 8 x 8 tiles

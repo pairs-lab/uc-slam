@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+
+# Data, depth cache and run outputs (large, produced locally)
+data/
+runs/
+eval/out/
+experiments/out/*
+!experiments/out/depth_prior_bench.json
+!experiments/out/depth_prior_bench.md
+
+# Build products of the submodules (third_party/ORB_SLAM3 and third_party/Pangolin are git submodules)
+third_party/Pangolin/build/
+third_party/Pangolin/install/
+third_party/ORB_SLAM3/Vocabulary/ORBvoc.txt
+
+# C++ build products of UC-SLAM
+cpp/ucslam/build/
+cpp/ucslam/lib/
+cpp/ucslam/Thirdparty/*/build/
+cpp/ucslam/Thirdparty/*/lib/
+cpp/ucslam/Vocabulary/
+cpp/ucslam/build_ucslam.log
+cpp/ucslam/Examples/*/mono_*
+cpp/ucslam/Examples/*/stereo_*
+cpp/ucslam/Examples/*/rgbd_*
+!cpp/ucslam/Examples/*/*.cc
+!cpp/ucslam/Examples/*/*.cpp

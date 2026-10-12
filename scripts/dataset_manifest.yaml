@@ -1,0 +1,440 @@
+# UC-SLAM dataset manifest.  Consumed by scripts/fetch_datasets.py and scripts/verify_datasets.py.
+# Provenance and integrity record for every archive we use.  Hashes are recorded by
+# `fetch_datasets.py --record` from the bytes actually downloaded (sha256 of the ASL zip / TUM tar).
+# Keep this header comment block: fetch_datasets.py --record preserves leading '#' lines only.
+version: 1
+recorded: '2026-09-19'
+root: data
+datasets:
+  euroc:
+    description: EuRoC MAV dataset (Burri et al., IJRR 2016), original ASL-format zips (mav0/ layout)
+    layout: euroc_asl
+    canonical_host: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/
+    canonical_status: 'curl -m 20 timed out from this machine on 2026-09-19; listed first so it is
+      preferred whenever it answers'
+    mirror_used:
+      name: huggingface:GlowBond/EuRoC_MAV_Dataset
+      url: https://huggingface.co/datasets/GlowBond/EuRoC_MAV_Dataset
+      date: '2026-09-19'
+      note: 'The mirror stores four bundles (vicon_room1.zip, vicon_room2.zip, machine_hall.zip,
+        calibration_datasets.zip, 24.7 GB total) which contain the ORIGINAL ASL zips (deflate-stored,
+        zip method 8) next to the rosbags.  We HTTP-Range-download only the ASL member bytes and
+        inflate them locally; the inflated file must match the bundle central-directory CRC32 and
+        size, and then the recorded sha256.  Observed 35-37 MB/s.  The unpacked V1_01_easy.zip is
+        byte-identical in size (1149702102) to huggingface:pepijn223/euroc-mirror/V1_01_easy.zip.'
+    other_mirrors_seen:
+      - id: huggingface:pepijn223/euroc-mirror
+        note: only V1_01_easy.zip (plain ASL zip, 1149702102 bytes)
+      - id: huggingface:kavehsgh/EuRoC_MAV_Dataset_Machine_Hall_Easy_01
+        note: MH_01_easy.bag rosbag only (2673818914 bytes); not ASL layout, not used
+      - id: huggingface:XiuyuanQi/EuRoc_ETH
+        note: empty repository (only .gitattributes)
+    gt_csv: mav0/state_groundtruth_estimate0/data.csv
+    gt_frame: 'body frame S (IMU) w.r.t. world R; q_RS stored w,x,y,z'
+    holdout: [MH_04_difficult, V1_03_difficult, V2_03_difficult]
+    bundles:
+      vicon_room1: https://huggingface.co/datasets/GlowBond/EuRoC_MAV_Dataset/resolve/main/vicon_room1.zip
+      vicon_room2: https://huggingface.co/datasets/GlowBond/EuRoC_MAV_Dataset/resolve/main/vicon_room2.zip
+      machine_hall: https://huggingface.co/datasets/GlowBond/EuRoC_MAV_Dataset/resolve/main/machine_hall.zip
+      calibration_datasets: https://huggingface.co/datasets/GlowBond/EuRoC_MAV_Dataset/resolve/main/calibration_datasets.zip
+    sequences:
+      V1_01_easy:
+        archive: V1_01_easy.zip
+        size: 1149702102
+        crc32: 1abe6a0d
+        sha256: a920fe5b5e69a6ad19b32f1cfaf90ac2f59d45dfd1ca18cc9722e07684ba45fa
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/vicon_room1/V1_01_easy/V1_01_easy.zip
+            timeout: 20
+          - type: zip_member
+            bundle: vicon_room1
+            member: vicon_room1/V1_01_easy/V1_01_easy.zip
+            range: [1540401978, 2689937329]
+          - type: file
+            url: https://huggingface.co/datasets/pepijn223/euroc-mirror/resolve/main/V1_01_easy.zip
+      V1_02_medium:
+        archive: V1_02_medium.zip
+        size: 668079368
+        crc32: 369b3afd
+        sha256: 0cf5d44baf7aac5d6d705dfb6c5abdd097139bc95aa252dc0c00c66d479ebfc2
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/vicon_room1/V1_02_medium/V1_02_medium.zip
+            timeout: 20
+          - type: zip_member
+            bundle: vicon_room1
+            member: vicon_room1/V1_02_medium/V1_02_medium.zip
+            range: [872423394, 1540400046]
+      V1_03_difficult:
+        archive: V1_03_difficult.zip
+        size: 801343542
+        crc32: d12f04fa
+        sha256: 3a29beda3c9467dcab08bfa181ed924c3397c2bdb3a780baaef6eb12955d82a4
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/vicon_room1/V1_03_difficult/V1_03_difficult.zip
+            timeout: 20
+          - type: zip_member
+            bundle: vicon_room1
+            member: vicon_room1/V1_03_difficult/V1_03_difficult.zip
+            range: [5241055126, 6042261759]
+      V2_01_easy:
+        archive: V2_01_easy.zip
+        size: 883081407
+        crc32: 53d8d375
+        sha256: 06875e7591a883c7bfadc4604c41dce4837a475fe272e0337650141bc9530262
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/vicon_room2/V2_01_easy/V2_01_easy.zip
+            timeout: 20
+          - type: zip_member
+            bundle: vicon_room2
+            member: vicon_room2/V2_01_easy/V2_01_easy.zip
+            range: [2088951558, 2971891838]
+      V2_02_medium:
+        archive: V2_02_medium.zip
+        size: 898452319
+        crc32: c31003da
+        sha256: 6bbaae64fa28d888533f8659284d5a7b4cd0278ec8f5d2548a919e296518edd2
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/vicon_room2/V2_02_medium/V2_02_medium.zip
+            timeout: 20
+          - type: zip_member
+            bundle: vicon_room2
+            member: vicon_room2/V2_02_medium/V2_02_medium.zip
+            range: [264, 898305849]
+      V2_03_difficult:
+        archive: V2_03_difficult.zip
+        size: 820796031
+        crc32: ba8f2bff
+        sha256: 98f78ae99e35a93af3f641c62d29d8826a63d013ffa89263a363ab03aab4ad7e
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/vicon_room2/V2_03_difficult/V2_03_difficult.zip
+            timeout: 20
+          - type: zip_member
+            bundle: vicon_room2
+            member: vicon_room2/V2_03_difficult/V2_03_difficult.zip
+            range: [4135028682, 4955694759]
+      MH_01_easy:
+        archive: MH_01_easy.zip
+        size: 1571292346
+        crc32: a1c54dd7
+        sha256: 5f4ecbc563e7bf04950efab76fc3b14e126d4c91a1dd1134c33124fe18a4bfc6
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/machine_hall/MH_01_easy/MH_01_easy.zip
+            timeout: 20
+          - type: zip_member
+            bundle: machine_hall
+            member: machine_hall/MH_01_easy/MH_01_easy.zip
+            range: [8572438037, 10143569891]
+      MH_02_easy:
+        archive: MH_02_easy.zip
+        size: 1292413952
+        crc32: 05bd2c2f
+        sha256: 7439b07f0b34a499494c63f08b958c7948132468bce7d4952aeb082720aebd51
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/machine_hall/MH_02_easy/MH_02_easy.zip
+            timeout: 20
+          - type: zip_member
+            bundle: machine_hall
+            member: machine_hall/MH_02_easy/MH_02_easy.zip
+            range: [5241193024, 6533473202]
+      MH_03_medium:
+        archive: MH_03_medium.zip
+        size: 1105301873
+        crc32: fd0efa08
+        sha256: 0f1707dfd6c9cda2c38302f4f7a47abb9a01a622a515dcbd6863730f0990f442
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/machine_hall/MH_03_medium/MH_03_medium.zip
+            timeout: 20
+          - type: zip_member
+            bundle: machine_hall
+            member: machine_hall/MH_03_medium/MH_03_medium.zip
+            range: [11578555449, 12683726944]
+      MH_04_difficult:
+        archive: MH_04_difficult.zip
+        size: 726518489
+        crc32: ef013401
+        sha256: b1a73e16ee8c7ce275844af3f06c7ecf647171e78983f903fd1fb1c47866bd3d
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/machine_hall/MH_04_difficult/MH_04_difficult.zip
+            timeout: 20
+          - type: zip_member
+            bundle: machine_hall
+            member: machine_hall/MH_04_difficult/MH_04_difficult.zip
+            range: [2827222131, 3553610791]
+      MH_05_difficult:
+        archive: MH_05_difficult.zip
+        size: 828426215
+        crc32: c8794414
+        sha256: 7accb582d42c6826adb30c7d0f090dbf413202efdce495bb10b297d27800d19a
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/machine_hall/MH_05_difficult/MH_05_difficult.zip
+            timeout: 20
+          - type: zip_member
+            bundle: machine_hall
+            member: machine_hall/MH_05_difficult/MH_05_difficult.zip
+            range: [1062184395, 1890469428]
+    calibration:
+      note: 'EuRoC calibration recordings (not needed for the ASL mav0 sensor.yaml files, which ship
+        inside every sequence).  Listed for completeness; not downloaded.'
+      cam_april:
+        archive: cam_april.zip
+        size: 559098638
+        crc32: 8d06eeb3
+        sha256: null
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/calibration_datasets/cam_april/cam_april.zip
+            timeout: 20
+          - type: zip_member
+            bundle: calibration_datasets
+            member: calibration_datasets/cam_april/cam_april.zip
+            range: [972092229, 1531114582]
+      cam_checkerboard:
+        archive: cam_checkerboard.zip
+        size: 897469456
+        crc32: b63457dc
+        sha256: null
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/calibration_datasets/cam_checkerboard/cam_checkerboard.zip
+            timeout: 20
+          - type: zip_member
+            bundle: calibration_datasets
+            member: calibration_datasets/cam_checkerboard/cam_checkerboard.zip
+            range: [2284395988, 3181733853]
+      imu_april:
+        archive: imu_april.zip
+        size: 451768931
+        crc32: 3810137a
+        sha256: null
+        sources:
+          - type: file
+            url: http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/calibration_datasets/imu_april/imu_april.zip
+            timeout: 20
+          - type: zip_member
+            bundle: calibration_datasets
+            member: calibration_datasets/imu_april/imu_april.zip
+            range: [520431045, 972091717]
+  tumvi:
+    description: TUM Visual-Inertial dataset (Schubert et al., IROS 2018), EuRoC/ASL export, 512x512 16-bit
+    layout: tumvi_euroc_export
+    canonical_host: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/
+    canonical_status: 'reachable 2026-09-19; run-1 curl chain measured 4.5-4.7 MB/s single connection
+      (room3-6); fetch_datasets.py measured 9.8-10.6 MB/s per connection with two
+      concurrent, 5.5 MB/s each once the extraction jobs competed for disk'
+    md5_published: 'yes, one <archive>.md5 per tar on the same host (recorded below as md5_server)'
+    tar_layout: 'dataset-<name>_512_16/mav0/{cam0,cam1,imu0,mocap0}/data.csv (images in cam*/data/*.png,
+      512x512 16-bit) and dataset-<name>_512_16/dso/{camchain.yaml,imu_config.yaml,imu.txt,gt_imu.csv,
+      cam{0,1}/{camera.txt,pcalib.txt,vignette.png,times.txt,images->../../mav0/cam*/data}}'
+    calibration_note: 'CORRECTED 2026-09-19 after inspecting the tar: the 512_16 euroc export carries NO
+      sensor.yaml files.  Calibration is Kalibr-format dso/camchain.yaml (pinhole + equidistant,
+      T_cam_imu per camera, T_cn_cnm1) and dso/imu_config.yaml (200 Hz; inflated noise densities
+      a=0.0028 m/s^1.5, a_rw=0.00086, g=0.00016 rad/s^0.5, g_rw=0.000022; Allan values in comments).
+      fetch_datasets.py extracts dso/ next to mav0/.  Raw calibration recordings exist at
+      .../512_16/dataset-calib-{cam1..8,imu1..4,vignette2,3}_512_16.tar (not downloaded).'
+    gt_csv: mav0/mocap0/data.csv
+    gt_frame: 'header "#timestamp [ns], p_RS_R_x [m], ..., q_RS_w [], q_RS_x [], q_RS_y [], q_RS_z []" as
+      in EuRoC (S = IMU/body frame, R = mocap world; q stored w,x,y,z).  The data rows are identical to
+      dso/gt_imu.csv (checked with diff on room1), i.e. the export gives the IMU pose, not the raw
+      marker pose.  Mocap rate ~107-119 Hz with dropouts (max gap 0.17-3.15 s on room1-6).'
+    holdout: [room5, room6]
+    sequences:
+      room1:
+        archive: dataset-room1_512_16.tar
+        size: 1707110400
+        md5_server: 51d2b8d93ee4ada47ec0b2d10115dcf8
+        sha256: 20354392eab5cc82c9770ed29cf0130c5acce0db54a257571499008fb34c398f
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-room1_512_16.tar
+      room2:
+        archive: dataset-room2_512_16.tar
+        size: 1759395840
+        md5_server: 412ec1596f2973a5cefac6a351a43486
+        sha256: 70343c5bbd9d674d0a2790bf934ee7d9cc08c1dea7cd77747a5557e4c94973f6
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-room2_512_16.tar
+      room3:
+        archive: dataset-room3_512_16.tar
+        size: 1742612480
+        md5_server: f38c8f3e30f06a1fb28e6b47e8702fc8
+        sha256: 66ff297e6600e882277d21e21af5ec9fb33864ec0b759dcc0b629cf551a3c824
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-room3_512_16.tar
+      room4:
+        archive: dataset-room4_512_16.tar
+        size: 1356206080
+        md5_server: 8e2ec2c35ee40a54c9aaa5bc2b3c9d8c
+        sha256: 2c3633407693988cf24faef5f874cba08bbc3c2d2ec1168c86b6da55ae9f2e68
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-room4_512_16.tar
+      room5:
+        archive: dataset-room5_512_16.tar
+        size: 1696430080
+        md5_server: 04d7d89ba18cc92a5fcd5eb4e57b0aaf
+        sha256: be6129b096dc88a7da0a552f1fc74c3309fffaa88bf4528a779e3ecc60a65519
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-room5_512_16.tar
+      room6:
+        archive: dataset-room6_512_16.tar
+        size: 1598576640
+        md5_server: 92d51756530a5d0d8a742faa37b42bcf
+        sha256: 3183e404e1d24bb8cea29ab6e4e69a69a5f88a68dac6c2ab7f67b6ac86d62827
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-room6_512_16.tar
+      corridor1:
+        archive: dataset-corridor1_512_16.tar
+        size: 3518935040
+        md5_server: 05fb167d21b21fb68af6f674cd5afe9f
+        sha256: 074417f29d07bea1bfdc338b8e276d4230c216a2a0c4468fab218997c4a32b25
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-corridor1_512_16.tar
+      corridor2:
+        archive: dataset-corridor2_512_16.tar
+        size: 3998965760
+        md5_server: 0e4496fe05ebb13e66efdd0553b95785
+        sha256: f1d3e2fe07fd78d1095f5b8eb64cc09aa9adfe1005e293c9351ead6665ceabe7
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-corridor2_512_16.tar
+      corridor3:
+        archive: dataset-corridor3_512_16.tar
+        size: 3402803200
+        md5_server: 32a4533517ba9b8c334b9ebaf5c7491a
+        sha256: c07442aa63de067c694a621aeac981db0602a4251f0981e29efb8af910b738e2
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-corridor3_512_16.tar
+      corridor4:
+        archive: dataset-corridor4_512_16.tar
+        size: 1135073280
+        md5_server: 2090088d7e636e095fdfd3da2a0c3274
+        sha256: 4faa65e3025ff4ede2f03d6f833b267e6cf289422598231d2486283ea737f39b
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-corridor4_512_16.tar
+      corridor5:
+        archive: dataset-corridor5_512_16.tar
+        size: 3472885760
+        md5_server: 8dbb20f0bd5c434f460a0bb659f17a6a
+        sha256: 77d14b7ee1824dae0a2474e8934ba06fbab341245b4e389905390934bce31bfb
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-corridor5_512_16.tar
+      magistrale1:
+        archive: dataset-magistrale1_512_16.tar
+        size: 10284318720
+        md5_server: ef6cfb4840308d4c0206c9334398aaf4
+        sha256: 575a025d6de65960eca33951078508f31c7e35b36364564e326900d6f472c318
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-magistrale1_512_16.tar
+      magistrale2:
+        archive: dataset-magistrale2_512_16.tar
+        size: 7205877760
+        md5_server: 8858e9db09f418efe90c5fd0bad5e2c4
+        sha256: b452a9d5c7e3f8afd4101809cd2552cdb45693f95e825d7a3469f99e8a2a981d
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-magistrale2_512_16.tar
+      magistrale3:
+        archive: dataset-magistrale3_512_16.tar
+        size: 6348554240
+        md5_server: c84a0c01a8704e7ed96b27e8bab7cc78
+        sha256: b99f15c77e39e6cbbeeeffb9f580db53dc3d05a90bcabd4b0b4a38b7f057a94a
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-magistrale3_512_16.tar
+      magistrale4:
+        archive: dataset-magistrale4_512_16.tar
+        size: 7747020800
+        md5_server: e5a6f9a5f13b0fddef22817e1b025f37
+        sha256: c4c4694a1b9dd29a253a37de8edb6a11d93ee9ffef2cd1c13fb3ad34026f13b4
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-magistrale4_512_16.tar
+      magistrale5:
+        archive: dataset-magistrale5_512_16.tar
+        size: 5793576960
+        md5_server: 0a1f37585c78a5b4bb1d31f97ebdb7d9
+        sha256: 71b3b8819e654343c116f2e0f32d87f03c52bcbd40cf442d4b812080faa07f5e
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-magistrale5_512_16.tar
+      magistrale6:
+        archive: dataset-magistrale6_512_16.tar
+        size: 7117148160
+        md5_server: 1a4df4d408c3c0a4b9cf36dfee00c96d
+        sha256: d686ee8d9c6aa771c96ca25a397a9651283f12e1282cbd5754b949633f7e76a0
+        sources:
+          - type: file
+            url: https://cdn3.vision.in.tum.de/tumvi/exported/euroc/512_16/dataset-magistrale6_512_16.tar
+  viode:
+    description: VIODE simulated dynamic-environment VI dataset (Minoda et al., RA-L 2021), rosbags
+    layout: rosbag
+    note: 'ROS bags only (/cam0/image_raw, /cam1/image_raw, /cam0/segmentation, /cam1/segmentation,
+      /imu0, /odometry); a bag-to-ASL converter is required before use (no ROS on this machine).
+      Zenodo measured 0.33 MB/s on 2026-09-19 twice (5.0 MB in 15 s and 4.96 MB in 15 s), i.e. ~11 h for the 12.9 GB.  The GitHub README (fetched 2026-09-19) links ONLY the
+      Zenodo record (no Google Drive mirror); the sizes and md5 below were read from the Zenodo API
+      (https://zenodo.org/api/records/4493401).  A background `fetch_datasets.py --dataset viode
+      --sequences parking_lot city_night city_day` was started 2026-09-19 (see
+      data/_downloads/STATUS.md); the archives are md5-checked on completion and are NOT extracted
+      (rosbag layout, no ROS here; a pure-python reader such as the `rosbags` package would do).'
+    zenodo_record: https://zenodo.org/record/4493401
+    zenodo_doi: 10.5281/zenodo.4493401
+    github: https://github.com/kminoda/VIODE
+    citation: 'Minoda, Schilling, Wuest, Floreano, Yairi. VIODE: A Simulated Dataset to Address the
+      Challenges of Visual-Inertial Odometry in Dynamic Environments. IEEE RA-L 6(2):1343-1350, 2021.
+      doi:10.1109/LRA.2021.3058073'
+    sequences:
+      city_day:
+        archive: city_day.zip
+        size: 5937754604
+        md5_server: 31c2a9bdbf5064315b0a17b0dca8fd53
+        sha256: null
+        sources:
+          - type: file
+            url: https://zenodo.org/api/records/4493401/files/city_day.zip/content
+      city_night:
+        archive: city_night.zip
+        size: 3638527108
+        md5_server: 176b2e597467404ccc7e08b6dcbe5713
+        sha256: null
+        sources:
+          - type: file
+            url: https://zenodo.org/api/records/4493401/files/city_night.zip/content
+      parking_lot:
+        archive: parking_lot.zip
+        size: 3329112352
+        md5_server: 62d9e4d08d8e81067734d8eded6d3830
+        sha256: null
+        sources:
+          - type: file
+            url: https://zenodo.org/api/records/4493401/files/parking_lot.zip/content
+    aux_files:
+      note: small calibration / segmentation-id files from the GitHub repo, downloaded 2026-09-19 into data/viode/
+      base_url: https://raw.githubusercontent.com/kminoda/VIODE/master/
+      files:
+        calibration_files/calibration.yaml: d051e4f1861a003bb65d718f3f9afe1194cf5677927c089d194ca876468374b9
+        calibration_files/cam0_pinhole.yaml: f6a2716d0a0a67b20ea592f9c61c857ac1a2f2a557f8fb107cc5aaf602fc47e3
+        calibration_files/cam1_pinhole.yaml: f6a2716d0a0a67b20ea592f9c61c857ac1a2f2a557f8fb107cc5aaf602fc47e3
+        segmentation/rgb_ids.txt: aa29618c60cf0bfdda8ff1bd23590c5abb50dc0dadd34e0e91c9bd6769fc045d
+        segmentation/vehicle_ids_city_day.txt: 55d27cc9025e0573925661ae311b94197a913ff0682d30a2df75240b7185f110
+        segmentation/vehicle_ids_city_night.txt: 8ae011cae9648d51e32aff67a2f94d5d3fbd70589f734286469471101733aa14
+        segmentation/vehicle_ids_parking_lot.txt: ede110134c6efd4cc80b5bfecc75efa995d8145899ea14cf63fa0bbd8f538d3f

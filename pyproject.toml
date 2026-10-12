@@ -1,0 +1,49 @@
+[project]
+name = "ucslam"
+version = "0.2.0"
+description = "UC-SLAM: visual-inertial SLAM with a metric depth prior. Python tools for the depth cache, the evaluation and the reference math"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+dependencies = [
+  "numpy>=1.26",
+  "scipy>=1.11",
+  "matplotlib>=3.8",
+  "opencv-python-headless>=4.8",
+  "torch>=2.1",
+  "torchvision>=0.16",
+  "pyyaml>=6.0",
+  "sympy>=1.12",
+  "pillow>=10",
+  "tqdm>=4.66",
+  "evo>=1.31",
+  "transformers>=5.17.0",
+  "mmengine>=0.10.7",
+  "mmcv-lite>=2.2.0",
+  "timm>=1.0.30",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "ruff>=0.4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+  "slow: takes more than about 20 seconds, usually because it runs the real backbone on real frames",
+]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128" }]
+torchvision = [{ index = "pytorch-cu128" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.setuptools]
+packages = ["ucslam"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
