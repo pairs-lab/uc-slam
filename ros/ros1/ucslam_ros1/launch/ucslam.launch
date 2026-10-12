@@ -1,0 +1,62 @@
+<!--
+  UC-SLAM on ROS 1: slam_node and, with depth:=live, depth_node. Examples in ros/README.md.
+  Stop with Ctrl-C. Start roslaunch with its option sigint-timeout set to 120 (see ros/README.md), so that the node
+  has time to save the trajectories.
+-->
+<launch>
+  <!-- the repository: $UCSLAM_REPO, else three levels above the package (wrong when the package is a symlink) -->
+  <arg name="repo" default="$(eval optenv('UCSLAM_REPO', find('ucslam_ros1') + '/../../..'))" />
+  <arg name="settings" default="$(arg repo)/configs/euroc_mono_inertial.yaml" />
+  <arg name="vocabulary" default="$(arg repo)/third_party/ORB_SLAM3/Vocabulary/ORBvoc.txt" />
+  <arg name="output_dir" default="$(env HOME)/ucslam_out" />
+  <arg name="stereo" default="false" />
+  <arg name="image_topic" default="/cam0/image_raw" />
+  <arg name="image_right_topic" default="/cam1/image_raw" />
+  <arg name="imu_topic" default="/imu0" />
+  <!-- live: depth_node answers each keyframe. file: the precomputed depth cache under depth_dir (bag replay) -->
+  <arg name="depth" default="live" />
+  <arg name="depth_dir" default="$(arg repo)/data/depth" />
+  <arg name="domain" default="euroc" />
+  <arg name="view" default="camera" />
+  <arg name="tumvi_seq_dir" default="" />
+  <arg name="device" default="cuda" />
+  <!-- oldest: drop frames when tracking falls behind (live camera). none: track every frame (bag replay) -->
+  <arg name="frame_drop" default="oldest" />
+  <arg name="clahe" default="false" />
+  <arg name="viewer" default="false" />
+  <arg name="publish_points" default="false" />
+  <arg name="dpp_defer_max_kfs" default="0" />
+  <arg name="dpp_wait_ms" default="0" />
+
+  <group ns="ucslam">
+    <node pkg="ucslam_ros1" type="slam_node" name="slam_node" output="screen" required="true">
+      <param name="vocabulary" value="$(arg vocabulary)" />
+      <param name="settings" value="$(arg settings)" />
+      <param name="output_dir" value="$(arg output_dir)" />
+      <param name="stereo" value="$(arg stereo)" />
+      <param name="viewer" value="$(arg viewer)" />
+      <param name="frame_drop" value="$(arg frame_drop)" />
+      <param name="clahe" value="$(arg clahe)" />
+      <param name="publish_points" value="$(arg publish_points)" />
+      <param name="depth_source" value="$(arg depth)" />
+      <param name="depth_dir" value="$(arg depth_dir)" />
+      <param name="depth_backend" value="torch-fp32" />
+      <param name="depth_wait_ms" value="2000" />
+      <param name="dpp_wait_ms" value="$(arg dpp_wait_ms)" />
+      <param name="dpp_defer_max_kfs" value="$(arg dpp_defer_max_kfs)" />
+      <remap from="image" to="$(arg image_topic)" />
+      <remap from="image_right" to="$(arg image_right_topic)" />
+      <remap from="imu" to="$(arg imu_topic)" />
+    </node>
+
+    <node if="$(eval depth == 'live')" pkg="ucslam_ros1" type="depth_node.py" name="depth_node" output="screen"
+          launch-prefix="$(find ucslam_ros1)/scripts/venv_python.sh">
+      <param name="domain" value="$(arg domain)" />
+      <param name="backend" value="torch-fp32" />
+      <param name="device" value="$(arg device)" />
+      <param name="view" value="$(arg view)" />
+      <param name="tumvi_seq_dir" value="$(arg tumvi_seq_dir)" />
+      <param name="max_age_s" value="5.0" />
+    </node>
+  </group>
+</launch>

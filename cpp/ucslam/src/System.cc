@@ -246,8 +246,11 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
         mpPriorNet = new PriorNet(settings_->ucslam(), settings_->newImSize(), M1l, M2l);
         mptPriorNet = new thread(&ORB_SLAM3::PriorNet::Run, mpPriorNet);
         mpLocalMapper->SetPriorNet(mpPriorNet);
-        cout << "[UCSLAM] PriorNet thread started, cache " << settings_->ucslam().depthDir << "/"
-             << settings_->ucslam().dataset << "/*/" << settings_->ucslam().depthModel << endl;
+        if(settings_->ucslam().depthSource == "live")
+            cout << "[UCSLAM] PriorNet thread started, live depth through System::InsertDepthMap" << endl;
+        else
+            cout << "[UCSLAM] PriorNet thread started, cache " << settings_->ucslam().depthDir << "/"
+                 << settings_->ucslam().dataset << "/*/" << settings_->ucslam().depthModel << endl;
     }
 
     //Initialize the Loop Closing thread and launch
@@ -1478,6 +1481,17 @@ vector<cv::KeyPoint> System::GetTrackedKeyPointsUn()
 {
     unique_lock<mutex> lock(mMutexState);
     return mTrackedKeyPointsUn;
+}
+
+bool System::InsertDepthMap(double t, const cv::Mat& z, const PriorNet::DepthView& view)
+{
+    return mpPriorNet && mpPriorNet->IsLive() && mpPriorNet->PushDepthMap(t, z, view);
+}
+
+void System::SetKeyFrameCallback(std::function<void(double, unsigned long)> cb)
+{
+    if(mpPriorNet)
+        mpPriorNet->SetKeyFrameCallback(cb);
 }
 
 double System::GetTimeFromIMUInit()

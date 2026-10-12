@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ucslam_ros1</name>
+  <version>0.1.0</version>
+  <description>UC-SLAM for ROS 1 (Noetic): visual-inertial SLAM node with live metric depth from a depth network node.</description>
+  <maintainer email="anonymous@example.com">Anonymous</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
+
+  <depend>roscpp</depend>
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>cv_bridge</depend>
+  <depend>message_filters</depend>
+</package>

@@ -10,14 +10,15 @@
 #   FORK=/path/to/mirror/ucslam scripts/build_ucslam.sh   # build a copy of the fork instead
 #
 # FORK is the fork tree to build and STOCK the stock tree whose vocabulary is
-# linked. Both default to the paths in this repository. A mirror is an rsync
+# linked. Both default to the paths in this repository, and PANGO_INSTALL to the
+# Pangolin that ./build.sh installs (the ROS 2 container sets its own). A mirror is an rsync
 # of cpp/ucslam without build, lib and Vocabulary. Building a mirror leaves
 # the binaries of cpp/ucslam untouched while a benchmark uses them.
 set -euo pipefail
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 FORK="${FORK:-$REPO_ROOT/cpp/ucslam}"
 STOCK="${STOCK:-$REPO_ROOT/third_party/ORB_SLAM3}"
-PANGO_INSTALL="$REPO_ROOT/third_party/Pangolin/install"
+PANGO_INSTALL="${PANGO_INSTALL:-$REPO_ROOT/third_party/Pangolin/install}"
 JOBS=${JOBS:-12}
 NICE=${NICE:-10}
 log() { echo "[build_ucslam $(date +%H:%M:%S)] $*"; }
@@ -44,11 +45,15 @@ build_dir() {  # <source dir> [extra cmake args]
   nice -n "$NICE" cmake -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release "$@"
   nice -n "$NICE" make -C "$src/build" -j"$JOBS"
 }
-for tp in DBoW2 g2o Sophus; do
+for tp in DBoW2 g2o; do
   log "building Thirdparty/$tp"
   build_dir "$FORK/Thirdparty/$tp"
 done
+# Sophus is header-only for UC-SLAM. Its own tests and examples build with -Werror and are skipped.
+log "configuring Thirdparty/Sophus"
+build_dir "$FORK/Thirdparty/Sophus" -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF
 log "building UC-SLAM"
-build_dir "$FORK" -DPangolin_DIR="$PANGO_INSTALL/lib/cmake/Pangolin"
+# UCSLAM_CMAKE_ARGS: extra CMake arguments, for example -DCMAKE_DISABLE_FIND_PACKAGE_realsense2=TRUE
+build_dir "$FORK" -DPangolin_DIR="$PANGO_INSTALL/lib/cmake/Pangolin" ${UCSLAM_CMAKE_ARGS:-}
 log "done. binaries:"
 ls -1 "$FORK"/Examples/Monocular-Inertial/mono_inertial_euroc "$FORK"/Examples/Stereo-Inertial/stereo_inertial_euroc "$FORK"/Examples/Monocular-Inertial/mono_inertial_tum_vi 2>/dev/null || true

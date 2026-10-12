@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>ucslam_depth</name>
+  <version>0.1.0</version>
+  <description>UC-SLAM depth node for ROS 2: metric depth of each keyframe image with the code of the depth cache.</description>
+  <maintainer email="anonymous@example.com">Anonymous</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>ucslam_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

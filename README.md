@@ -93,6 +93,8 @@ uv run evo_ape tum data/euroc/MH_01_easy/gt.tum runs/orbslam3/mono_inertial/MH_0
 
 > EuRoC monocular-inertial results depend on machine load, because the examples pace to the image timestamps and drop keyframes when local mapping is busy. Run one process at a time.
 
+**ROS 1 and ROS 2.** [`ros/`](ros/) holds a SLAM node and a depth node for ROS 1 Noetic and ROS 2 Humble (with a Docker image), and notes for a Jetson Orin. The depth node runs the network on each new keyframe image, with the code of the depth cache. This support is new and not yet tested on a robot: see the test status in [ros/README.md](ros/README.md).
+
 ## 5. Configuration
 Example settings are in [`configs/`](configs/):
 
@@ -152,6 +154,7 @@ configs/             example settings and default.yaml (every constant)
 ucslam/              camera models, depth network wrapper, geometry, trajectories
 experiments/         depth cache (precompute_depth.py) and the depth-constant provenance
 eval/                runner and scorer (run_orbslam3.py)
+ros/                 ROS 1 and ROS 2 nodes with live depth, Docker image for ROS 2
 scripts/             build and dataset scripts
 results/             score files and trajectories
 third_party/         ORB_SLAM3 and Pangolin (git submodules)

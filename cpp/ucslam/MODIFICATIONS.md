@@ -11,10 +11,10 @@ The estimator changes are switched on by `UCSLAM.*` settings keys.
 
 | File | Purpose |
 |---|---|
-| `include/PriorNet.h` | metric depth prior service: per-keyframe depth from the precomputed cache |
+| `include/PriorNet.h` | metric depth prior service: per-keyframe depth from the precomputed cache, or pushed live by the ROS nodes |
 | `include/UcslamMarginals.h` | optional dump of the full-problem posterior covariance at shutdown |
 | `include/UcslamTypes.h` | g2o vertex and edge types: log-scale vertex, log-depth edge, log-scale random-walk edge |
-| `src/PriorNet.cc` | metric depth prior service: per-keyframe depth from the precomputed cache |
+| `src/PriorNet.cc` | metric depth prior service: per-keyframe depth from the precomputed cache, or pushed live by the ROS nodes |
 | `src/UcslamMarginals.cc` | optional dump of the full-problem posterior covariance at shutdown |
 | `src/UcslamTypes.cc` | g2o vertex and edge types: log-scale vertex, log-depth edge, log-scale random-walk edge |
 | `test/test_chain.cc` | unit test of the log-scale chain and its marginalization |
@@ -27,7 +27,10 @@ The estimator changes are switched on by `UCSLAM.*` settings keys.
 
 In the estimator files, the depth factor, the log-scale chain and their marginalization are wired into local
 and global bundle adjustment, keyframe culling, map merging and loop closing, and the settings reader parses
-the `UCSLAM.*` keys.
+the `UCSLAM.*` keys. For the ROS nodes in `ros/` of the repository, `System` gains `InsertDepthMap` (a live depth
+map for a tracked image) and `SetKeyFrameCallback` (a call for each new keyframe), with the keys
+`UCSLAM.DepthSource`, `DepthWaitMs`, `DepthBufferMaps`, `DppWaitMs` and `DppDeferMaxKFs`. Their defaults keep the
+depth cache path of the benchmark unchanged.
 
 | File | Change |
 |---|---|

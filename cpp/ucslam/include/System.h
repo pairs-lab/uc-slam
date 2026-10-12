@@ -185,6 +185,14 @@ public:
     std::vector<MapPoint*> GetTrackedMapPoints();
     std::vector<cv::KeyPoint> GetTrackedKeyPointsUn();
 
+    // UC-SLAM live depth (UCSLAM.DepthSource live), for the ROS 1 and ROS 2 nodes. InsertDepthMap pushes the network
+    // depth of the image tracked at time t (the same double passed to Track*). It returns false without a live
+    // PriorNet. The callback runs in the thread that calls Track*, inside Track* while the map is locked, right after
+    // a keyframe is made, with its stamp and id: it must return quickly and must not call System. Both are no-ops on
+    // the benchmark path.
+    bool InsertDepthMap(double t, const cv::Mat& z, const PriorNet::DepthView& view);
+    void SetKeyFrameCallback(std::function<void(double, unsigned long)> cb);
+
     // For debugging
     double GetTimeFromIMUInit();
     bool isLost();

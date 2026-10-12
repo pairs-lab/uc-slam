@@ -194,6 +194,9 @@ protected:
     LoopClosing* mpLoopCloser;
     Tracking* mpTracker;
     PriorNet* mpPriorNet;
+    // UC-SLAM live depth, rule UCSLAM.DppDeferMaxKFs: keyframes whose depth came too late for their depth-prior
+    // points, with the number of mapper steps since. Empty unless that key is set.
+    std::list<std::pair<KeyFrame*, int> > mlDppPending;
 
     std::list<KeyFrame*> mlNewKeyFrames;
 

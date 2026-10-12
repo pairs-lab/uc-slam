@@ -30,3 +30,6 @@ cpp/ucslam/Examples/*/stereo_*
 cpp/ucslam/Examples/*/rgbd_*
 !cpp/ucslam/Examples/*/*.cc
 !cpp/ucslam/Examples/*/*.cpp
+
+# ROS 1 depth node: rospkg and catkin_pkg next to the repository venv (ros/README.md)
+ros/ros1/pydeps/

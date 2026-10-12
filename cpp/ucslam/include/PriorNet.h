@@ -25,7 +25,10 @@
 
 #include <opencv2/core/core.hpp>
 
+#include <chrono>
 #include <condition_variable>
+#include <deque>
+#include <functional>
 #include <list>
 #include <mutex>
 #include <ostream>
@@ -96,6 +99,31 @@ public:
     std::string SequenceDir();
     long long KeyframesWithDepth();
 
+    // Live depth (UCSLAM.DepthSource live), for the ROS 1 and ROS 2 nodes. The maps come from the caller instead of
+    // the cache. With DepthSource file none of this runs: PushDepthMap refuses and NotifyKeyFrame returns at once.
+    struct DepthView
+    {
+        enum Kind { CAMERA = 1, PINHOLE = 2 };
+        int kind = CAMERA;                   // CAMERA: the map is a copy of the recorded frame, PINHOLE: a rectified view
+        int fullW = 0, fullH = 0;            // network input size in pixels (full_size of the cache manifest)
+        float K[4] = {0.f, 0.f, 0.f, 0.f};   // fx fy cx cy of the pinhole view, PINHOLE only
+        std::string model;                   // must equal UCSLAM.DepthModel
+    };
+    bool IsLive() const { return mbLive; }
+    // t is the double passed to Track* for that image. z is CV_16F or CV_32F metres at any map size, 0 = no
+    // prediction. Thread safe, copies, never blocks. Refuses (counts, and logs the first refusal of each kind) when
+    // not live, when the view or model is wrong, or when t is not newer than the last pushed map. The producer
+    // pushes in stamp order.
+    bool PushDepthMap(double t, const cv::Mat& z, const DepthView& view);
+    // Called by LocalMapping::InsertKeyFrame. Live: calls the keyframe callback. File: returns at once. The callback
+    // runs in the tracking thread inside Track*, while the map is locked, so it must return quickly and must not call
+    // System. Its exceptions are caught and logged.
+    void NotifyKeyFrame(double t, unsigned long kfId);
+    void SetKeyFrameCallback(std::function<void(double, unsigned long)> cb);
+    // The conversion PushDepthMap applies: the float16-to-float32 conversion and the hole rule of ReadNpyFloat16.
+    // Public so that a test can compare the two.
+    static bool MatToDepthMap(const cv::Mat& z, DepthMap& map, std::string& err);
+
     // Pure helpers, no state. Public so a test can call them.
     static bool ReadNpyFloat16(const std::string& path, DepthMap& map, std::string& err);
     static void ComputeGradients(DepthMap& map);
@@ -106,6 +134,12 @@ private:
     enum View { VIEW_NONE = 0, VIEW_CAMERA = 1, VIEW_PINHOLE = 2 };
 
     bool ProcessKeyFrame(KeyFrame* pKF);
+    bool ProcessKeyFrameLive(KeyFrame* pKF, const std::chrono::steady_clock::time_point& tStart);
+    // Sampling, sigma_D, SetDepthPrior and the statistics, shared by the file and the live path.
+    bool AttachDepth(KeyFrame* pKF, const DepthMap& map, const std::chrono::steady_clock::time_point& tStart);
+    // Live wait rule: use a buffered map within DepthMatchTolMs, give up once a later map was pushed (the producer
+    // pushes in order), else wait up to DepthWaitMs. Returns 1 with a map, 0 given up, -1 timeout, -2 finish.
+    int FindLiveMap(long long stampNs, DepthMap& map, DepthView& view, double& waitMs);
     bool LocateSequence(long long stampNs);
     bool ReadManifest(const std::string& path);
     bool ListStamps(const std::string& dir, std::vector<long long>& stamps);
@@ -145,6 +179,19 @@ private:
     std::vector<double> mvCoverage;      // keypoints with depth over keypoints, per keyframe with a map
     std::vector<double> mvSigmaMedian;   // median sigma_D per keyframe
     bool mbWarnedNoMap, mbWarnedNoSequence, mbWarnedShape;
+
+    // Live depth
+    const bool mbLive;
+    std::mutex mMutexLive;
+    std::condition_variable mCondLive;
+    std::deque<std::pair<DepthMap, DepthView> > mdLive;   // pushed maps, oldest first
+    long long mnLastPushedNs;
+    std::function<void(double, unsigned long)> mKeyFrameCallback;
+    std::mutex mMutexCallback;
+    long long mnPushed, mnRejected, mnDropped, mnWaitTimeouts, mnGivenUp;
+    int mnRefusalsLogged;                 // bit k set: refusal reason k was logged
+    bool mbWarnedCallback;
+    std::vector<double> mvWaitMs;
 };
 
 } // namespace ORB_SLAM3

@@ -26,6 +26,7 @@
 #include "PriorNet.h"
 #include "System.h"
 
+#include <chrono>
 #include <iomanip>
 
 #include<mutex>
@@ -132,7 +133,50 @@ void LocalMapping::Run()
             CreateNewMapPoints();
 
             // UC-SLAM: map points from the depth prior, only with the depth factor on and the depth ready.
-            CreateDepthPriorMapPoints(mpCurrentKeyFrame, mpAtlas, mlpRecentAddedMapPoints, Optimizer::UcslamParams());
+            {
+                const Settings::Ucslam& u = Optimizer::UcslamParams();
+                const bool bDpp = u.useDepthFactor && u.maxDepthPriorPoints > 0;
+                // Live depth, rule UCSLAM.DppWaitMs: wait a bounded time for the depth of this keyframe. Off by default.
+                if(bDpp && u.dppWaitMs > 0.f && !mpCurrentKeyFrame->DepthPriorReady())
+                {
+                    const std::chrono::steady_clock::time_point tEnd = std::chrono::steady_clock::now() +
+                        std::chrono::microseconds((long long)(u.dppWaitMs * 1000.0f));
+                    while(!mpCurrentKeyFrame->DepthPriorReady() && std::chrono::steady_clock::now() < tEnd)
+                        usleep(1000);
+                }
+                // Live depth, rule UCSLAM.DppDeferMaxKFs: a keyframe without depth yet gets its points in a later step.
+                if(bDpp && u.dppDeferMaxKFs > 0 && !mpCurrentKeyFrame->DepthPriorReady())
+                    mlDppPending.push_back(std::make_pair(mpCurrentKeyFrame, 0));
+                else
+                    CreateDepthPriorMapPoints(mpCurrentKeyFrame, mpAtlas, mlpRecentAddedMapPoints, u);
+                if(!mlDppPending.empty())
+                {
+                    Map* pCurrentMap = mpAtlas->GetCurrentMap();
+                    for(std::list<std::pair<KeyFrame*, int> >::iterator it = mlDppPending.begin(); it != mlDppPending.end();)
+                    {
+                        KeyFrame* pKF = it->first;
+                        if(pKF == mpCurrentKeyFrame)
+                        {
+                            ++it;
+                            continue;
+                        }
+                        it->second++;
+                        if(pKF->isBad() || pKF->GetMap() != pCurrentMap || it->second > u.dppDeferMaxKFs)
+                        {
+                            cout << "[UCSLAM] dpp_deferred kf=" << pKF->mnId << " age_kfs=" << it->second << " created=0 dropped=1" << endl;
+                            it = mlDppPending.erase(it);
+                        }
+                        else if(pKF->DepthPriorReady())
+                        {
+                            const int n = CreateDepthPriorMapPoints(pKF, mpAtlas, mlpRecentAddedMapPoints, u);
+                            cout << "[UCSLAM] dpp_deferred kf=" << pKF->mnId << " age_kfs=" << it->second << " created=" << n << endl;
+                            it = mlDppPending.erase(it);
+                        }
+                        else
+                            ++it;
+                    }
+                }
+            }
 
             mbAbortBA = false;
 
@@ -375,9 +419,15 @@ void LocalMapping::Run()
 
 void LocalMapping::InsertKeyFrame(KeyFrame *pKF)
 {
-    unique_lock<mutex> lock(mMutexNewKFs);
-    mlNewKeyFrames.push_back(pKF);
-    mbAbortBA=true;
+    {
+        unique_lock<mutex> lock(mMutexNewKFs);
+        mlNewKeyFrames.push_back(pKF);
+        mbAbortBA=true;
+    }
+    // UC-SLAM live depth: ask for the depth of this keyframe now, so that the network runs while the keyframe waits
+    // in the mapper queue. Returns at once with UCSLAM.DepthSource file.
+    if(mpPriorNet)
+        mpPriorNet->NotifyKeyFrame(pKF->mTimeStamp, pKF->mnId);
 }
 
 
@@ -1459,6 +1509,7 @@ void LocalMapping::ResetIfRequested()
             cout << "LM: Reseting Atlas in Local Mapping..." << endl;
             mlNewKeyFrames.clear();
             mlpRecentAddedMapPoints.clear();
+            mlDppPending.clear();
             mbResetRequested = false;
             mbResetRequestedActiveMap = false;
 
@@ -1482,6 +1533,7 @@ void LocalMapping::ResetIfRequested()
             cout << "LM: Reseting current map in Local Mapping..." << endl;
             mlNewKeyFrames.clear();
             mlpRecentAddedMapPoints.clear();
+            mlDppPending.clear();
 
             // Inertial parameters
             mTinit = 0.f;

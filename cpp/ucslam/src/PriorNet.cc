@@ -26,6 +26,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <climits>
+#include <exception>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -96,7 +98,10 @@ PriorNet::PriorNet(const Settings::Ucslam& params, const cv::Size& workImSize,
     mnFullW(0), mnFullH(0), mnMapW(0), mnMapH(0), mnQueueMax(0),
     mbFinishRequested(false), mbFinished(false),
     mnReceived(0), mnWithDepth(0), mnNoMap(0), mnNoSequence(0), mnBadMap(0),
-    mbWarnedNoMap(false), mbWarnedNoSequence(false), mbWarnedShape(false)
+    mbWarnedNoMap(false), mbWarnedNoSequence(false), mbWarnedShape(false),
+    mbLive(params.depthSource == "live"), mnLastPushedNs(LLONG_MIN),
+    mnPushed(0), mnRejected(0), mnDropped(0), mnWaitTimeouts(0), mnGivenUp(0), mnRefusalsLogged(0),
+    mbWarnedCallback(false)
 {
     mKview[0] = mKview[1] = mKview[2] = mKview[3] = 0.f;
     if(mbRectified && (mM1l.type() != CV_32F || mM2l.type() != CV_32F))
@@ -135,6 +140,7 @@ void PriorNet::RequestFinish()
         mbFinishRequested = true;
     }
     mCondQueue.notify_all();
+    mCondLive.notify_all();      // wakes a FindLiveMap that waits for a map
 }
 
 bool PriorNet::CheckFinish()
@@ -486,6 +492,8 @@ bool PriorNet::WorkToMap(KeyFrame* pKF, const cv::Point2f& p, float& um, float& 
 bool PriorNet::ProcessKeyFrame(KeyFrame* pKF)
 {
     const chrono::steady_clock::time_point tStart = chrono::steady_clock::now();
+    if(mbLive)
+        return ProcessKeyFrameLive(pKF, tStart);
     const long long stampNs = llround(pKF->mTimeStamp * 1e9);
 
     if(!mbLocated)
@@ -547,6 +555,12 @@ bool PriorNet::ProcessKeyFrame(KeyFrame* pKF)
              << mnMapW << "x" << mnMapH << ", using the map's own size" << endl;
         mbWarnedShape = true;
     }
+    return AttachDepth(pKF, map, tStart);
+}
+
+bool PriorNet::AttachDepth(KeyFrame* pKF, const DepthMap& map, const chrono::steady_clock::time_point& tStart)
+{
+    // Moved verbatim from ProcessKeyFrame so that the live path uses the same arithmetic.
     const float mapW = (float)map.width, mapH = (float)map.height;
     const float sx = mapW / (float)mnMapW, sy = mapH / (float)mnMapH;   // 1 unless the shapes disagree
 
@@ -608,6 +622,206 @@ bool PriorNet::ProcessKeyFrame(KeyFrame* pKF)
     return true;
 }
 
+// ------------------------------------------------------------- live depth --
+
+bool PriorNet::MatToDepthMap(const cv::Mat& z, DepthMap& map, string& err)
+{
+    if(z.empty() || z.channels() != 1 || (z.depth() != CV_16F && z.depth() != CV_32F))
+    {
+        err = "depth map must be a non-empty one-channel CV_16F or CV_32F matrix";
+        return false;
+    }
+    // The same conversion and hole rule as ReadNpyFloat16, so a pushed float16 map equals the cached one.
+    cv::Mat z32;
+    if(z.depth() == CV_16F)
+        z.convertTo(z32, CV_32F);
+    else
+        z32 = z.clone();
+    if(!z32.isContinuous())
+        z32 = z32.clone();
+    map.width = z32.cols;
+    map.height = z32.rows;
+    map.z.assign((float*)z32.data, (float*)z32.data + (size_t)z32.rows * z32.cols);
+    for(float& v : map.z)
+        if(!(v > 0.f) || !std::isfinite(v))
+            v = 0.f;
+    ComputeGradients(map);
+    return true;
+}
+
+bool PriorNet::PushDepthMap(double t, const cv::Mat& z, const DepthView& view)
+{
+    const long long stampNs = llround(t * 1e9);
+    // Reason of a refusal: 1 not live, 2 view, 3 model, 4 matrix, 5 stamp order. The first refusal of each kind is
+    // logged, so that a wrong model or view does not pass for a wait timeout.
+    int reason = 0;
+    DepthMap map;
+    string err;
+    if(!mbLive)
+        reason = 1;
+    else if(!(view.kind == DepthView::CAMERA || view.kind == DepthView::PINHOLE) || view.fullW <= 0 || view.fullH <= 0 ||
+            (view.kind == DepthView::PINHOLE && !(view.K[0] > 0.f && view.K[1] > 0.f)))
+        reason = 2;
+    else if(view.model != mParams.depthModel)
+        reason = 3;
+    else if(!MatToDepthMap(z, map, err))
+        reason = 4;
+    unique_lock<mutex> lock(mMutexLive);
+    if(!reason && stampNs <= mnLastPushedNs)
+        reason = 5;
+    if(reason)
+    {
+        mnRejected++;
+        if(!(mnRefusalsLogged & (1 << reason)))
+        {
+            mnRefusalsLogged |= (1 << reason);
+            cerr << "[UCSLAM] PriorNet: refused a pushed depth map at " << stampNs << " ns: ";
+            if(reason == 1) cerr << "UCSLAM.DepthSource is not live";
+            if(reason == 2) cerr << "bad view (kind " << view.kind << ", network size " << view.fullW << "x" << view.fullH
+                                 << ", fx " << view.K[0] << ", fy " << view.K[1] << ")";
+            if(reason == 3) cerr << "model '" << view.model << "' is not UCSLAM.DepthModel '" << mParams.depthModel << "'";
+            if(reason == 4) cerr << err;
+            if(reason == 5) cerr << "not newer than the last pushed map";
+            cerr << " (logged once per reason)" << endl;
+        }
+        return false;
+    }
+    map.stampNs = stampNs;
+    mdLive.push_back(make_pair(std::move(map), view));
+    while((int)mdLive.size() > max(1, mParams.depthBufferMaps))
+    {
+        mdLive.pop_front();
+        mnDropped++;
+    }
+    mnLastPushedNs = stampNs;
+    mnPushed++;
+    lock.unlock();
+    mCondLive.notify_all();
+    return true;
+}
+
+void PriorNet::NotifyKeyFrame(double t, unsigned long kfId)
+{
+    if(!mbLive)
+        return;
+    function<void(double, unsigned long)> cb;
+    {
+        unique_lock<mutex> lock(mMutexCallback);
+        cb = mKeyFrameCallback;
+    }
+    if(!cb)
+        return;
+    // The callback runs inside Track*: an exception must not reach the tracker.
+    try
+    {
+        cb(t, kfId);
+    }
+    catch(const std::exception& e)
+    {
+        if(!mbWarnedCallback)
+            cerr << "[UCSLAM] PriorNet: keyframe callback threw: " << e.what() << " (logged once)" << endl;
+        mbWarnedCallback = true;
+    }
+    catch(...)
+    {
+        if(!mbWarnedCallback)
+            cerr << "[UCSLAM] PriorNet: keyframe callback threw (logged once)" << endl;
+        mbWarnedCallback = true;
+    }
+}
+
+void PriorNet::SetKeyFrameCallback(function<void(double, unsigned long)> cb)
+{
+    unique_lock<mutex> lock(mMutexCallback);
+    mKeyFrameCallback = cb;
+}
+
+int PriorNet::FindLiveMap(long long stampNs, DepthMap& map, DepthView& view, double& waitMs)
+{
+    const long long tolNs = (long long)(mParams.depthMatchTolMs * 1e6);
+    const chrono::steady_clock::time_point t0 = chrono::steady_clock::now();
+    const chrono::steady_clock::time_point deadline =
+        t0 + chrono::microseconds((long long)(mParams.depthWaitMs * 1000.0));
+    unique_lock<mutex> lock(mMutexLive);
+    while(true)
+    {
+        // Rule 1: a buffered map within the tolerance, the nearest one.
+        long long bestDiff = LLONG_MAX;
+        const pair<DepthMap, DepthView>* best = NULL;
+        for(const pair<DepthMap, DepthView>& e : mdLive)
+        {
+            const long long d = llabs(e.first.stampNs - stampNs);
+            if(d <= tolNs && d < bestDiff)
+            {
+                bestDiff = d;
+                best = &e;
+            }
+        }
+        waitMs = NowMsSince(t0);
+        if(best)
+        {
+            map = best->first;
+            view = best->second;
+            return 1;
+        }
+        // Rule 2: a later map was pushed already, so this one never comes (the producer pushes in order).
+        if(mnLastPushedNs != LLONG_MIN && mnLastPushedNs > stampNs + tolNs)
+            return 0;
+        // Rule 3: wait until one of the above, the deadline or finish.
+        if(CheckFinish())
+            return -2;
+        if(chrono::steady_clock::now() >= deadline)
+            return -1;
+        mCondLive.wait_until(lock, min(deadline, chrono::steady_clock::now() + chrono::milliseconds(20)));
+    }
+}
+
+bool PriorNet::ProcessKeyFrameLive(KeyFrame* pKF, const chrono::steady_clock::time_point& tStart)
+{
+    const long long stampNs = llround(pKF->mTimeStamp * 1e9);
+    DepthMap map;
+    DepthView view;
+    double waitMs = 0.0;
+    const int r = FindLiveMap(stampNs, map, view, waitMs);
+    {
+        unique_lock<mutex> lock(mMutexLive);
+        mvWaitMs.push_back(waitMs);
+        if(r == 0) mnGivenUp++;
+        if(r == -1) mnWaitTimeouts++;
+    }
+    if(r != 1)
+    {
+        unique_lock<mutex> lock(mMutexStats);
+        mnNoMap++;
+        if(!mbWarnedNoMap)
+        {
+            cerr << "[UCSLAM] PriorNet: no live depth map for keyframe stamp " << stampNs << " ns ("
+                 << (r == 0 ? "a later map arrived first" : r == -1 ? "wait timeout" : "finish")
+                 << "), this keyframe gets no depth (logged once)" << endl;
+            mbWarnedNoMap = true;
+        }
+        return false;
+    }
+    // The view of the pushed map, used by WorkToMap on this thread only.
+    mView = (view.kind == DepthView::PINHOLE) ? VIEW_PINHOLE : VIEW_CAMERA;
+    mnFullW = view.fullW;
+    mnFullH = view.fullH;
+    mnMapW = map.width;
+    mnMapH = map.height;
+    for(int i = 0; i < 4; i++)
+        mKview[i] = view.K[i];
+    if(!mbLocated)
+    {
+        unique_lock<mutex> lock(mMutexStats);
+        mbLocated = true;
+        mSeqDir = "live";
+        cout << "[UCSLAM] PriorNet: live depth (view " << (mView == VIEW_PINHOLE ? "pinhole" : "camera") << ", full "
+             << mnFullW << "x" << mnFullH << ", map " << mnMapW << "x" << mnMapH << ", working image "
+             << mWorkImSize.width << "x" << mWorkImSize.height << ")" << endl;
+    }
+    return AttachDepth(pKF, map, tStart);
+}
+
 // ------------------------------------------------------------------ stats --
 
 double PriorNet::Percentile(vector<double> v, double q)
@@ -638,6 +852,14 @@ void PriorNet::PrintStats(ostream& out)
         << " p10=" << Percentile(mvCoverage, 0.1) << " min=" << Percentile(mvCoverage, 0.0) << endl;
     out << "[UCSLAM] priornet sigma_D per_keyframe_median p50=" << Percentile(mvSigmaMedian, 0.5)
         << " p90=" << Percentile(mvSigmaMedian, 0.9) << endl;
+    if(mbLive)
+    {
+        unique_lock<mutex> lockLive(mMutexLive);
+        out << "[UCSLAM] priornet live pushed=" << mnPushed << " rejected=" << mnRejected << " dropped=" << mnDropped
+            << " wait_timeouts=" << mnWaitTimeouts << " given_up=" << mnGivenUp << " wait_ms p50="
+            << Percentile(mvWaitMs, 0.5) << " p99=" << Percentile(mvWaitMs, 0.99) << " max="
+            << Percentile(mvWaitMs, 1.0) << endl;
+    }
 }
 
 } // namespace ORB_SLAM3

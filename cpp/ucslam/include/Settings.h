@@ -187,6 +187,14 @@ namespace ORB_SLAM3 {
                                                 // free keyframe, weighted to keep their information (needs ESSDeflation, DepthGateMode and DepthEdgeGateAtAdd 1)
             int diagMargCheck = 0;              // UCSLAM.DiagMargCheck, 1 computes both marginal paths, marg_check in the diag lba line
             int diagSubsampleCheck = 0;         // UCSLAM.DiagSubsampleCheck, 1 prints one diag subsample line per free keyframe of the subsample
+            // Live depth for a robot (ROS 1 and ROS 2 nodes). Every default keeps the depth cache path of the benchmark.
+            std::string depthSource = "file";   // UCSLAM.DepthSource: file (the cache under DepthDir), live (maps pushed through System::InsertDepthMap)
+            float depthWaitMs = 0.0f;           // UCSLAM.DepthWaitMs, live: how long PriorNet waits for the map of a keyframe that has not arrived
+            int depthBufferMaps = 32;           // UCSLAM.DepthBufferMaps, live: pushed maps kept in a ring
+            float dppWaitMs = 0.0f;             // UCSLAM.DppWaitMs, LocalMapping waits up to this long for the depth before it makes depth-prior points
+            int dppDeferMaxKFs = 0;             // UCSLAM.DppDeferMaxKFs, a keyframe whose depth was late gets its depth-prior points in a later
+                                                // mapper step, up to this many keyframes later. Such points skip the fuse into the neighbour
+                                                // keyframes and meet the culling test one mapper step sooner than normal ones
             std::vector<std::string> keysFound; // the UCSLAM.* keys present in the file, in read order
         };
         const Ucslam& ucslam() const {return ucslam_;}

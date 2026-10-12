@@ -17,7 +17,10 @@ PANGO="$ROOT/third_party/Pangolin"
 PANGO_INSTALL="$PANGO/install"
 if [ ! -f "$PANGO_INSTALL/lib/cmake/Pangolin/PangolinConfig.cmake" ]; then
   log "building Pangolin (core library only)"
+  # Pangolin v0.6 uses std::numeric_limits in some files without including <limits>, and g++ 11 (Ubuntu 22.04,
+  # JetPack 6) then fails. "-include limits" adds it to every C++ file.
   cmake -S "$PANGO" -B "$PANGO/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PANGO_INSTALL" \
+    -DCMAKE_CXX_FLAGS="-include limits" \
     -DBUILD_PANGOLIN_PYTHON=OFF -DBUILD_EXAMPLES=OFF -DBUILD_TOOLS=OFF -DBUILD_TESTS=OFF \
     -DBUILD_PANGOLIN_FFMPEG=OFF -DBUILD_PANGOLIN_LIBREALSENSE=OFF -DBUILD_PANGOLIN_LIBREALSENSE2=OFF \
     -DBUILD_PANGOLIN_OPENNI=OFF -DBUILD_PANGOLIN_OPENNI2=OFF -DBUILD_PANGOLIN_LIBUVC=OFF \

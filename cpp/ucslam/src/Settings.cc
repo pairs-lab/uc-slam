@@ -571,6 +571,11 @@ namespace ORB_SLAM3 {
         ucslamFloat(fSettings, "UCSLAM.DepthEdgeSubsampleEps", u.depthEdgeSubsampleEps, f);
         ucslamInt(fSettings, "UCSLAM.DiagMargCheck", u.diagMargCheck, f);
         ucslamInt(fSettings, "UCSLAM.DiagSubsampleCheck", u.diagSubsampleCheck, f);
+        ucslamString(fSettings, "UCSLAM.DepthSource", u.depthSource, f);
+        ucslamFloat(fSettings, "UCSLAM.DepthWaitMs", u.depthWaitMs, f);
+        ucslamInt(fSettings, "UCSLAM.DepthBufferMaps", u.depthBufferMaps, f);
+        ucslamFloat(fSettings, "UCSLAM.DppWaitMs", u.dppWaitMs, f);
+        ucslamInt(fSettings, "UCSLAM.DppDeferMaxKFs", u.dppDeferMaxKFs, f);
 
         if(u.initPolicy != "timer" && u.initPolicy != "ours" && u.initPolicy != "wait"){
             std::cerr << "UCSLAM.InitPolicy must be timer, ours or wait, got " << u.initPolicy << ", aborting..." << std::endl;
@@ -580,8 +585,20 @@ namespace ORB_SLAM3 {
             std::cerr << "UCSLAM.CovSource must be pyramid or learned, got " << u.covSource << ", aborting..." << std::endl;
             exit(-1);
         }
-        if(u.priorNet && (u.depthDir.empty() || u.depthModel.empty())){
-            std::cerr << "UCSLAM.PriorNet is 1 but UCSLAM.DepthDir or UCSLAM.DepthModel is missing, aborting..." << std::endl;
+        if(u.depthSource != "file" && u.depthSource != "live"){
+            std::cerr << "UCSLAM.DepthSource must be file or live, got " << u.depthSource << ", aborting..." << std::endl;
+            exit(-1);
+        }
+        if(u.priorNet && u.depthModel.empty()){
+            std::cerr << "UCSLAM.PriorNet is 1 but UCSLAM.DepthModel is missing, aborting..." << std::endl;
+            exit(-1);
+        }
+        if(u.priorNet && u.depthSource == "file" && u.depthDir.empty()){
+            std::cerr << "UCSLAM.PriorNet is 1 with UCSLAM.DepthSource file but UCSLAM.DepthDir is missing, aborting..." << std::endl;
+            exit(-1);
+        }
+        if(u.depthWaitMs < 0.f || u.dppWaitMs < 0.f || u.depthBufferMaps < 1 || u.dppDeferMaxKFs < 0){
+            std::cerr << "UCSLAM.DepthWaitMs and UCSLAM.DppWaitMs must be >= 0, UCSLAM.DepthBufferMaps >= 1 and UCSLAM.DppDeferMaxKFs >= 0, aborting..." << std::endl;
             exit(-1);
         }
         // UC-SLAM (attempt 08): the depth-edge subsample reweights the information N_eff / N of each edge, and its
@@ -801,6 +818,19 @@ namespace ORB_SLAM3 {
         output << "\t-DepthEdgeSubsampleEps: " << u.depthEdgeSubsampleEps << " (" << src("UCSLAM.DepthEdgeSubsampleEps") << ")" << endl;
         output << "\t-DiagMargCheck: " << u.diagMargCheck << " (" << src("UCSLAM.DiagMargCheck") << ")" << endl;
         output << "\t-DiagSubsampleCheck: " << u.diagSubsampleCheck << " (" << src("UCSLAM.DiagSubsampleCheck") << ")" << endl;
+        // The live-depth keys are printed only when the file sets one of them, so a benchmark log keeps its settings block.
+        bool liveKeys = false;
+        for(const std::string& k : u.keysFound)
+            if(k == "UCSLAM.DepthSource" || k == "UCSLAM.DepthWaitMs" || k == "UCSLAM.DepthBufferMaps" ||
+               k == "UCSLAM.DppWaitMs" || k == "UCSLAM.DppDeferMaxKFs")
+                liveKeys = true;
+        if(liveKeys){
+            output << "\t-DepthSource: " << u.depthSource << " (" << src("UCSLAM.DepthSource") << ")" << endl;
+            output << "\t-DepthWaitMs: " << u.depthWaitMs << " (" << src("UCSLAM.DepthWaitMs") << ")" << endl;
+            output << "\t-DepthBufferMaps: " << u.depthBufferMaps << " (" << src("UCSLAM.DepthBufferMaps") << ")" << endl;
+            output << "\t-DppWaitMs: " << u.dppWaitMs << " (" << src("UCSLAM.DppWaitMs") << ")" << endl;
+            output << "\t-DppDeferMaxKFs: " << u.dppDeferMaxKFs << " (" << src("UCSLAM.DppDeferMaxKFs") << ")" << endl;
+        }
 
         return output;
     }
