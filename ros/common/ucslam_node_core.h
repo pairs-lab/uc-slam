@@ -110,7 +110,6 @@ inline std::string ReadSettingString(const std::string& path, const std::string&
     return std::string();
 }
 
-// mkdir -p. Returns an error message, empty on success.
 // An absolute path: a relative one is taken from the current directory. The node changes into output_dir before
 // System opens its files, so every path must be absolute by then.
 inline std::string AbsolutePath(const std::string& p)
@@ -127,6 +126,7 @@ inline std::string AbsolutePath(const std::string& p)
 // scale refinements up to 75.5 s for monocular-inertial (LocalMapping::Run). Until then scale and gravity can move.
 inline double SettlingMapTime(bool stereo) { return stereo ? 16.0 : 76.0; }
 
+// mkdir -p. Returns an error message, empty on success.
 inline std::string MakeDirs(const std::string& path)
 {
     if(path.empty())

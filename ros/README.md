@@ -22,7 +22,7 @@ camera + IMU --> slam_node --- DepthRequest (keyframe stamp + image) ---> depth_
 
 - `slam_node` sends one `DepthRequest` per new keyframe with the image it was made from. `depth_node` answers with a `DepthPrior` that carries the same stamp. The depth reaches the keyframe in the PriorNet thread of UC-SLAM, so tracking never waits for the network.
 - The pose is published only after the IMU initialization (before it, a monocular map has no metric scale) and while tracking is OK or recently lost. It is the IMU (body) pose in the map frame of UC-SLAM, whose z axis points up after the IMU initialization.
-- `~status` reports `settling` until the last inertial refinement of the base system has run: 76 s of map time (`map_time_s`, the time since the first keyframe of the map) in monocular-inertial mode and 16 s in stereo-inertial mode. Scale and gravity can still move until then. A loop closure moves the map: `map_changes` counts the frames on which `System::MapChanged()` reported such a change.
+- `~status` reports `settling` until the last inertial refinement of the base system has run: 76 s of map time (`map_time_s`, the time since the first keyframe of the map) in monocular-inertial mode and 16 s in stereo-inertial mode. Scale and gravity can still move until then. The refinements run on an internal clock that advances only while the camera moves, so on a platform that stands still they come later than this. A loop closure moves the map: `map_changes` counts the frames on which `System::MapChanged()` reported such a change.
 - On shutdown (Ctrl-C) the node waits for local mapping and saves `f_ucslam.txt` (all frames) and `kf_ucslam.txt` (keyframes) in `output_dir`, in the EuRoC format of the benchmark examples. It also keeps `ucslam_settings.yaml`, the settings file it ran with.
 
 ## Requirements and limits
@@ -31,7 +31,7 @@ camera + IMU --> slam_node --- DepthRequest (keyframe stamp + image) ---> depth_
 - **Camera domain.** The depth constants (`UCSLAM.SigmaNetC0`, `SigmaNetC1`, `LogBias`, `NeffOverN`) hold for one camera domain. The provided values are for EuRoC, TUM-VI and the OpenLORIS D435i color camera. A new camera, such as RealSense infrared, needs its own values from reference depth before its results mean anything. `depth_node` sends `domain` and `backend`, and `slam_node` refuses a depth map whose domain differs from `UCSLAM.Dataset` of the settings.
 - **IMU rate.** `IMU.Frequency` must equal the real rate of the IMU topic.
 - **Late depth.** A keyframe whose depth arrives after its mapping step gets no depth-prior points. Two optional rules exist, both off by default: `dpp_wait_ms` (the mapper waits up to that long) and `dpp_defer_max_kfs` (the points are made in a later mapping step, but they skip the fuse into neighbour keyframes and meet the culling test one step sooner). They are not yet tuned.
-- **Status.** First version. The full builds, bag replays and live tests are still to be run (see the end of this file).
+- **Status.** First version, tested on bag replays (see the end of this file), not yet on a robot.
 
 ## ROS 1 (Noetic, Ubuntu 20.04)
 
@@ -154,6 +154,8 @@ Main `depth_node` parameters: `domain` [euroc], `backend` [torch-fp32], `model` 
 | ROS 1 `slam_node` and the shared core compile (syntax check), ROS 1 launch file loads | done |
 | ROS 1 depth node message conversions, round trip | done |
 | ROS 2 API use checked against the Humble sources (review, no build) | done |
-| ROS 2 build in Docker, bag replay with the depth cache, live depth on a GPU | to do |
+| ROS 2 image and in-container build (Ubuntu 22.04, g++ 11, Eigen 3.4, OpenCV 4.5) | done |
+| ROS 2 replay of EuRoC MH_01 mono-inertial, depth cache, one run | done: keyframe ATE 4.84 cm (the 10 benchmark runs: 2.89 to 10.28 cm), every keyframe got its depth |
+| ROS 2 replay of EuRoC MH_01 mono-inertial, live depth on an RTX 4070 Ti, one run | done: keyframe ATE 4.55 cm, every keyframe got depth, network 90 to 95 ms per image (median), depth reaches a keyframe about 110 ms after it is made (median), so no keyframe got depth-prior points |
 | Full catkin build and ROS 1 replay | to do |
 | Jetson Orin | not tested |

@@ -87,7 +87,7 @@ public:
     {
         ucslam_node::Options o;
         o.vocabulary = declare_parameter<std::string>("vocabulary", "");
-        const std::string settings = declare_parameter<std::string>("settings", "");
+        std::string settings = declare_parameter<std::string>("settings", "");
         o.stereo = declare_parameter<bool>("stereo", false);
         o.viewer = declare_parameter<bool>("viewer", false);
         o.imu_wait_ms = declare_parameter<double>("imu_wait_ms", 50.0);
@@ -104,7 +104,7 @@ public:
         bodyFrame_ = declare_parameter<std::string>("body_frame", "imu");
         publishTf_ = declare_parameter<bool>("publish_tf", true);
         const std::string depthSource = declare_parameter<std::string>("depth_source", "live");
-        const std::string depthDir = declare_parameter<std::string>("depth_dir", "");
+        std::string depthDir = declare_parameter<std::string>("depth_dir", "");
         backend_ = declare_parameter<std::string>("depth_backend", "torch-fp32");
         const double depthWaitMs = declare_parameter<double>("depth_wait_ms", 2000.0);
         const double dppWaitMs = declare_parameter<double>("dpp_wait_ms", 0.0);

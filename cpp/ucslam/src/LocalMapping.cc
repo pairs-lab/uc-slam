@@ -54,6 +54,11 @@ LocalMapping::LocalMapping(System* pSys, Atlas *pAtlas, const float bMonocular, 
 
     mTinit = 0.f;
 
+    // UC-SLAM: initialized, upstream leaves them undefined until the first keyframe. System::GetTimeFromIMUInit reads
+    // both, which the ROS nodes call after every frame (the benchmark examples never call it).
+    mpCurrentKeyFrame = static_cast<KeyFrame*>(NULL);
+    mFirstTs = 0.0;
+
     mNumLM = 0;
     mNumKFCulling=0;
 
