@@ -10,6 +10,11 @@ per-domain constants of the depth factor were fitted on that map. So this module
 
 The result is the float16 map, the network input size and the view. The C++ side (PriorNet::PushDepthMap) applies
 the same float16-to-float32 conversion as its cache reader.
+
+``backend`` picks the network in step 1. torch-fp32 (the default) is MetricDepth as above, the backend of the
+cache. torch-fp16, trt-fp16 and trt-fp32 (ucslam/trt_depth.py) keep the same processor, resample and steps 2-3,
+and change only the network. Their maps differ a little from the cache, so check them with
+scripts/jetson/depth_parity.py before use.
 """
 from __future__ import annotations
 
@@ -29,23 +34,53 @@ if REPO not in sys.path:
 from experiments.precompute_depth import (DEFAULT_CONFIG, downscale_map, load_config,  # noqa: E402
                                           make_view, net_input, precompute_params)
 from ucslam.depthnet import MetricDepth  # noqa: E402
+from ucslam.trt_depth import BACKENDS, EngineSizeError, check_processor, make_depth_net  # noqa: E402
 
 VIEW_CAMERA = 1
 VIEW_PINHOLE = 2
 
 
 class LiveDepth:
-    """One network on one device. ``__call__`` maps a gray image to a float16 depth map."""
+    """One network on one device. ``__call__`` maps a gray image to a float16 depth map.
+
+    ``backend``: one of BACKENDS. ``engine``: the TensorRT engine file of the trt-* backends. ``log`` gets the
+    warning, once per process, when the Hugging Face processor is not the torchvision one of the depth cache
+    (default ``warnings.warn``). The text stays in ``processor_warning`` (None when all is well).
+    """
 
     def __init__(self, model: Optional[str] = None, device: str = "cuda", config: str = DEFAULT_CONFIG,
-                 view: Optional[Dict] = None):
+                 view: Optional[Dict] = None, backend: str = "torch-fp32", engine: Optional[str] = None,
+                 log: Optional[Callable[[str], None]] = None):
+        if backend not in BACKENDS:
+            raise ValueError(f"unknown depth backend {backend!r}, expected one of {BACKENDS}")
         cfg = load_config(config)
         self.params = precompute_params(cfg)
         self.model = model or self.params["model"]
-        self.net = MetricDepth(self.model, device)
+        self.backend = backend
+        if backend == "torch-fp32" and not engine:
+            self.net = MetricDepth(self.model, device)   # the network of the depth cache
+        else:
+            self.net = make_depth_net(self.model, device, backend, engine)
+        self.processor_warning = check_processor(getattr(self.net, "processor", None), backend, log)
         # The view of make_view: {"view": "camera"} for EuRoC-like and RealSense cameras, or the TUM-VI pinhole
         # view with its remap maps. None means "camera" at the size of each image.
         self.view = view
+
+    @property
+    def fixed_size(self) -> bool:
+        """True when the network takes one input size only (a TensorRT engine)."""
+        return hasattr(self.net, "check_image_size")
+
+    def check_stream_size(self, height: int, width: int) -> None:
+        """Raise ValueError when a fixed-size network cannot serve a height x width stream.
+
+        The size checked is the size the network sees, after the view (a pinhole view remaps to its own size).
+        No check for a network that takes any size.
+        """
+        if not self.fixed_size:
+            return
+        x = net_input(np.zeros((int(height), int(width)), np.uint8), self.view or {"view": "camera", "maps": None})
+        self.net.check_image_size(int(x.shape[0]), int(x.shape[1]))
 
     def warmup(self, shape: Tuple[int, int], n: int = 3) -> None:
         """Run the network n times at the stream size before serving (first calls are slow)."""
@@ -93,16 +128,21 @@ class DepthWorker:
     the oldest is dropped. A request that waited more than ``max_age_s`` is dropped too, because the local BA has
     moved past its keyframe by then. The network warms up at ``warmup_shape`` when the thread starts, or else at
     the size of the first request.
-    ``on_result(key, zmap, desc, net_ms, queue_ms)`` runs in the worker thread.
+    ``on_result(key, zmap, desc, net_ms, queue_ms)`` runs in the worker thread. ``log`` takes the info lines and
+    ``warn`` the failures (default: ``log``).
     """
+    FAIL_LOG_PERIOD_S = 10.0
 
     def __init__(self, live: "LiveDepth", on_result: Callable, max_age_s: float = 5.0, max_queue: int = 16,
-                 log: Callable[[str], None] = print, warmup_shape: Optional[Tuple[int, int]] = None):
+                 log: Callable[[str], None] = print, warmup_shape: Optional[Tuple[int, int]] = None,
+                 warn: Optional[Callable[[str], None]] = None):
         self.live = live
         self.on_result = on_result
         self.max_age_s = float(max_age_s)
         self.max_queue = max(1, int(max_queue))
         self.log = log
+        self.warn = warn or log
+        self._size_error_said = False
         self.served = self.dropped_old = self.dropped_full = self.failed = 0
         self.net_ms: collections.deque = collections.deque(maxlen=1000)
         self._q: collections.deque = collections.deque()
@@ -110,6 +150,7 @@ class DepthWorker:
         self._stop = False
         self._warm = False
         self._warmup_shape = warmup_shape   # (h, w) of the stream if known, else the first request's size
+        self._fail_msg, self._fail_t, self._fail_n = "", 0.0, 0   # throttle of the failure log
         self._thread = threading.Thread(target=self._run, name="depth_worker", daemon=True)
         self._thread.start()
 
@@ -139,9 +180,32 @@ class DepthWorker:
         self.log(f"depth worker: warming up the network at {shape[1]}x{shape[0]}")
         try:
             self.live.warmup(shape)
+        except EngineSizeError as e:   # every request of this size will fail the same way
+            self._log_failure(e)
         except Exception as e:  # serve anyway: a real failure shows up as failed requests
-            self.log(f"depth worker: warm-up failed: {e!r}")
+            self.warn(f"depth worker: warm-up failed: {e!r}")
         self._warm = True
+
+    def _log_failure(self, e: Exception) -> None:
+        """Log a failed request. A new error text is logged at once, a repeated one at most every 10 s with its
+        count, so a wrong stream size does not flood the log at every keyframe. The first engine size error also
+        says that no request of that size can succeed."""
+        msg, now = repr(e), time.monotonic()
+        if msg != self._fail_msg:
+            self._fail_msg, self._fail_t, self._fail_n = msg, now, 0
+            if isinstance(e, EngineSizeError) and not self._size_error_said:
+                self._size_error_said = True
+                self.warn(f"depth worker: inference failed: {e}. Every depth request of this size will fail, and "
+                          f"SLAM runs without depth priors, until an engine for this size is built and the node "
+                          f"restarted. This error is logged at most every {self.FAIL_LOG_PERIOD_S:.0f} s from now on")
+            else:
+                self.warn(f"depth worker: inference failed: {msg}")
+            return
+        self._fail_n += 1
+        if now - self._fail_t >= self.FAIL_LOG_PERIOD_S:
+            self.warn(f"depth worker: inference failed {self._fail_n} more times in the last "
+                      f"{now - self._fail_t:.0f} s: {msg}")
+            self._fail_t, self._fail_n = now, 0
 
     def _run(self) -> None:
         if self._warmup_shape is not None:
@@ -163,8 +227,11 @@ class DepthWorker:
                 zmap, desc, net_ms = self.live(gray)
             except Exception as e:  # a bad image must not stop the node
                 self.failed += 1
-                self.log(f"depth worker: inference failed: {e!r}")
+                self._log_failure(e)
                 continue
             self.served += 1
             self.net_ms.append(net_ms)
-            self.on_result(key, zmap, desc, net_ms, queue_ms)
+            try:
+                self.on_result(key, zmap, desc, net_ms, queue_ms)
+            except Exception as e:  # a failed publish must not end the worker thread
+                self.warn(f"depth worker: result callback failed: {e!r}")

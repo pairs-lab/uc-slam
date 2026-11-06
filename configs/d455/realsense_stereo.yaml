@@ -1,0 +1,4 @@
+# realsense2_camera parameters for UC-SLAM stereo-inertial on the D455 infrared pair.
+# Passed as config_file by ros/ros2/ucslam_ros/launch/ucslam_d455.launch.py with mode:=stereo.
+# The IR projector must be off. Its dot pattern would move with the camera and break feature tracking.
+depth_module.emitter_enabled: 0

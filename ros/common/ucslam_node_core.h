@@ -8,6 +8,17 @@
  *  - IMU samples are kept only with a stamp strictly greater than the last accepted one (two equal stamps give a division
  *    by zero in the preintegration). Before a frame is tracked, the worker waits until an IMU sample at or after
  *    the image stamp has arrived (imu_wait_ms), then passes every sample with t <= t_image.
+ *  - IMU gap fill (imu_fill_gap_ms, off by default): a new sample more than imu_fill_gap_ms after the last kept one
+ *    is preceded by samples every imu_fill_period_ms, linearly interpolated between the two real samples. It is the
+ *    rule of scripts/openloris_convert.py (fill_imu_gaps), which the paper applied offline to the OpenLORIS-Scene
+ *    IMU stream (docs/protocol.md). A frame interval with fewer than two samples makes the base system skip the
+ *    preintegration of that frame and crash later. Gaps over imu_fill_max_ms (default 1 s) are not filled and are
+ *    counted in imu_fill_skipped: such a jump is a clock jump or a bad stamp, and filling it could need billions of
+ *    samples. The fill runs when the sample after the gap arrives. The worker waits only imu_wait_ms for that
+ *    sample, so a gap is filled in time for the frames inside it only when it is shorter than about imu_wait_ms.
+ *  - Short frames (always on): after the first tracked frame, a frame with fewer than two IMU samples since the last
+ *    tracked frame is not tracked (imu_short_frames). Its samples stay queued for the next frame. So a gap longer
+ *    than imu_wait_ms, with or without the fill, costs the frames inside it but never reaches Track*.
  *  - A frame older than the last tracked one is dropped (it would clear the IMU queue and start a new map).
  *  - The time passed to Track* is double(stamp_ns) / 1e9, computed once by StampToSec. The same double keys the
  *    image ring, the depth request and the depth map, so PriorNet matches them to the nanosecond.
@@ -28,6 +39,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cerrno>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 #include <atomic>
@@ -192,6 +205,9 @@ struct Options
     bool viewer = false;
     double imu_wait_ms = 50.0;            // wait for an IMU sample at or after the image stamp
     double imu_time_offset_s = 0.0;       // added to every IMU stamp (camera-IMU offset from calibration)
+    double imu_fill_gap_ms = 0.0;         // fill IMU gaps longer than this. 0: off
+    double imu_fill_period_ms = 5.0;      // spacing of the filled samples
+    double imu_fill_max_ms = 1000.0;      // gaps longer than this are not filled (clock jump or bad stamp)
     bool drop_oldest = true;              // live: drop the oldest frame when the queue is full. Bag replay: false
     size_t frame_queue = 3;               // frames waiting for the worker when drop_oldest
     double image_ring_s = 2.0;            // images kept for depth requests
@@ -220,6 +236,9 @@ struct Result
 struct Counters
 {
     std::atomic<uint64_t> frames{0}, dropped_frames{0}, old_frames{0}, imu_rejected{0}, imu_wait_timeouts{0};
+    std::atomic<uint64_t> imu_filled{0};  // samples added by the IMU gap fill
+    std::atomic<uint64_t> imu_fill_skipped{0};  // gaps over imu_fill_max_ms, left unfilled
+    std::atomic<uint64_t> imu_short_frames{0};  // frames not tracked: fewer than two IMU samples since the last one
     std::atomic<uint64_t> depth_requests{0}, depth_pushed{0}, depth_refused{0};
 };
 
@@ -259,6 +278,7 @@ public:
     void PushImu(int64_t stamp_ns, const Eigen::Vector3f& acc, const Eigen::Vector3f& gyr)
     {
         const double t = StampToSec(stamp_ns) + opt_.imu_time_offset_s;
+        uint64_t filled = 0;
         {
             std::unique_lock<std::mutex> lock(mImu_);
             if(!(t > lastImuT_))
@@ -266,9 +286,39 @@ public:
                 counters.imu_rejected++;
                 return;
             }
+            // Gap fill: stamps a + k * period, up to half a period before b (scripts/openloris_convert.py).
+            const int64_t gapNs = (int64_t)std::llround(opt_.imu_fill_gap_ms * 1e6);
+            const int64_t periodNs = (int64_t)std::llround(opt_.imu_fill_period_ms * 1e6);
+            const int64_t maxNs = (int64_t)std::llround(opt_.imu_fill_max_ms * 1e6);
+            const bool gap = gapNs > 0 && periodNs > 0 && haveLastImu_ && stamp_ns - lastImuNs_ > gapNs;
+            if(gap && stamp_ns - lastImuNs_ > maxNs)
+                counters.imu_fill_skipped++;   // so at most maxNs / periodNs samples are added under this lock
+            else if(gap)
+            {
+                const int64_t a = lastImuNs_, b = stamp_ns;
+                double prevT = lastImuT_;
+                for(int64_t s = a + periodNs; s <= b - periodNs / 2; s += periodNs)
+                {
+                    const double ts = StampToSec(s) + opt_.imu_time_offset_s;
+                    if(!(ts > prevT && ts < t))   // keep the stamps strictly increasing
+                        continue;
+                    const float w = (float)(double(s - a) / double(b - a));
+                    const Eigen::Vector3f fa = lastAcc_ + w * (acc - lastAcc_);
+                    const Eigen::Vector3f fg = lastGyr_ + w * (gyr - lastGyr_);
+                    imu_.push_back(ORB_SLAM3::IMU::Point(fa.x(), fa.y(), fa.z(), fg.x(), fg.y(), fg.z(), ts));
+                    prevT = ts;
+                    filled++;
+                }
+            }
             imu_.push_back(ORB_SLAM3::IMU::Point(acc.x(), acc.y(), acc.z(), gyr.x(), gyr.y(), gyr.z(), t));
             lastImuT_ = t;
+            lastImuNs_ = stamp_ns;
+            lastAcc_ = acc;
+            lastGyr_ = gyr;
+            haveLastImu_ = true;
         }
+        if(filled)
+            counters.imu_filled += filled;
         cvImu_.notify_all();
     }
 
@@ -352,6 +402,7 @@ private:
     void Run()
     {
         double lastT = -1.0;
+        bool tracked = false;   // a frame was passed to Track*: the next one needs IMU samples since then
         while(!stop_)
         {
             Frame f;
@@ -389,6 +440,21 @@ private:
             }
             if(stop_)
                 break;
+            // A frame interval with fewer than two IMU samples makes the base system skip the preintegration of
+            // the frame and crash later (docs/protocol.md, the check of the offline converter). This happens when
+            // the IMU stops for longer than imu_wait_ms. Such a frame is not tracked. Its samples go back to the
+            // queue, so the next frame integrates over both intervals, as after a dropped frame.
+            if(tracked && vImu.size() < 2)
+            {
+                {
+                    std::unique_lock<std::mutex> lock(mImu_);
+                    for(std::vector<ORB_SLAM3::IMU::Point>::reverse_iterator it = vImu.rbegin(); it != vImu.rend(); ++it)
+                        imu_.push_front(*it);
+                }
+                counters.imu_short_frames++;
+                continue;
+            }
+            if(onDepthRequest_)   // no ring without depth requests (depth off)
             {
                 std::unique_lock<std::mutex> lock(mRing_);
                 ring_.push_back(std::make_pair(f.stamp_ns, f.left));
@@ -438,6 +504,7 @@ private:
             }
             counters.frames++;
             lastT = t;
+            tracked = true;
             if(onResult_)
                 onResult_(r);
         }
@@ -471,6 +538,9 @@ private:
     std::condition_variable cvImu_;
     std::deque<ORB_SLAM3::IMU::Point> imu_;
     double lastImuT_ = -1e300;            // stamp of the last accepted IMU sample
+    int64_t lastImuNs_ = 0;               // the same sample for the gap fill: message stamp and values
+    Eigen::Vector3f lastAcc_ = Eigen::Vector3f::Zero(), lastGyr_ = Eigen::Vector3f::Zero();
+    bool haveLastImu_ = false;
 
     std::mutex mFrames_;
     std::condition_variable cvFrames_;

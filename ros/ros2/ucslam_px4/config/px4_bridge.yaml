@@ -1,0 +1,47 @@
+# Defaults of the px4_bridge node (ucslam_px4). launch/px4_bridge.launch.py loads this file. A launch argument
+# that is not empty overrides the value here. Integers are accepted for float values (5 or 5.0).
+/**:
+  ros__parameters:
+    odom_topic: /ucslam/slam_node/odom
+    status_topic: /ucslam/slam_node/status
+    # vision_pose: PoseStamped on vision_pose_topic (MAVLink VISION_POSITION_ESTIMATE, read as NED by PX4).
+    # odometry: Odometry on odometry_topic (MAVLink ODOMETRY in LOCAL_FRD), frame odom, child base_link.
+    output: vision_pose
+    vision_pose_topic: /mavros/vision_pose/pose
+    odometry_topic: /mavros/odometry/out
+
+    # Pose of base_link (FLU) in the IMU body frame of UC-SLAM: metres and radians, tf2 roll-pitch-yaw
+    # (R = Rz(yaw) Ry(pitch) Rx(roll)). These values are a D455 that looks forward and level, with the body
+    # frame of UC-SLAM equal to the RealSense IMU optical frame (x right, y down, z forward): base x = IMU z,
+    # base y = -IMU x, base z = -IMU y. Pitch -pi/2 is a valid value here (the angles are only turned into a
+    # matrix). Measure base_x, base_y, base_z on the frame (base_link origin in IMU axes).
+    base_x: 0.0
+    base_y: 0.0
+    base_z: 0.0
+    base_roll: 1.5707963267948966
+    base_pitch: -1.5707963267948966
+    base_yaw: 0.0
+    # true: read the mount from TF (<odom child frame> -> base_frame, e.g. a static_transform_publisher)
+    # instead of base_x .. base_yaw.
+    use_tf: false
+    base_frame: base_link
+
+    # Jump detection: a pose step above max_speed_mps x dt + jump_margin_m, or a yaw step above
+    # max_yaw_rate_dps x dt + jump_margin_deg, is a jump. The output is then re-anchored.
+    max_speed_mps: 5.0
+    max_yaw_rate_dps: 180.0
+    jump_margin_m: 0.05
+    jump_margin_deg: 3.0
+    # A longer gap between sent poses, or a stamp that goes back by more than this (bag loop, clock restart),
+    # starts a new segment (counted as a reset). PX4 stops vision fusion after 0.4 s without data.
+    gap_reset_s: 0.5
+    # Send only when the slam_node status is newer than status_timeout_s and says IMU initialized, not settling,
+    # and state 2 (tracking) or 3 (recently lost). With state 3 each frame is judged by its covariance (x100
+    # when RECENTLY_LOST), against a baseline learned while the status says state 2. Non-finite poses are
+    # always held.
+    require_status_ok: true
+    status_timeout_s: 3.0
+    # Messages in a row (each within 0.2 s of the last) needed before a segment starts.
+    start_frames: 3
+    # The status warns when the output rate falls below this. PX4 asks for 30 to 50 Hz.
+    publish_rate_min_hz: 20.0

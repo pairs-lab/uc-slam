@@ -2,15 +2,16 @@
  * UC-SLAM SLAM node for ROS 2 (Humble). The SLAM logic lives in ros/common/ucslam_node_core.h, shared with the
  * ROS 1 node. This file converts messages, publishes the results and serves the services.
  *
- * In:  image (mono8), image_right (stereo only), imu, depth_prior (live depth from depth_node)
+ * In:  image (gray, color or yuv422, see image_convert.h), image_right (stereo only), imu, depth_prior (live depth
+ *      from depth_node, not with depth_source off)
  * Out: ~/odom, ~/pose, tf map_frame -> body_frame, ~/tracked_points (optional), ~/status (1 Hz), depth_request
  * Services: ~/reset, ~/reset_active_map (std_srvs/Trigger), ~/localization_mode (std_srvs/SetBool)
  * See ros/README.md for the parameters.
  */
 #include "ucslam_node_core.h"
+#include "image_convert.h"
 
 #include <rclcpp/rclcpp.hpp>
-#include <cv_bridge/cv_bridge.h>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -33,6 +34,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -43,19 +45,6 @@ namespace
 
 using sensor_msgs::msg::Image;
 typedef message_filters::sync_policies::ExactTime<Image, Image> StereoPolicy;
-
-cv::Mat HighByte(const cv::Mat& im16)
-{
-    cv::Mat out(im16.rows, im16.cols, CV_8UC1);
-    for(int r = 0; r < im16.rows; r++)
-    {
-        const uint16_t* a = im16.ptr<uint16_t>(r);
-        uint8_t* b = out.ptr<uint8_t>(r);
-        for(int c = 0; c < im16.cols; c++)
-            b[c] = (uint8_t)(a[c] >> 8);
-    }
-    return out;
-}
 
 double Percentile(std::vector<double> v, double q)
 {
@@ -92,6 +81,9 @@ public:
         o.viewer = declare_parameter<bool>("viewer", false);
         o.imu_wait_ms = declare_parameter<double>("imu_wait_ms", 50.0);
         o.imu_time_offset_s = declare_parameter<double>("imu_time_offset", 0.0);
+        o.imu_fill_gap_ms = declare_parameter<double>("imu_fill_gap_ms", 0.0);
+        o.imu_fill_period_ms = declare_parameter<double>("imu_fill_period_ms", 5.0);
+        o.imu_fill_max_ms = declare_parameter<double>("imu_fill_max_ms", 1000.0);
         const std::string frameDrop = declare_parameter<std::string>("frame_drop", "oldest");
         o.frame_queue = (size_t)std::max<int64_t>(1, declare_parameter<int64_t>("frame_queue", 3));
         o.image_ring_s = declare_parameter<double>("image_ring_s", 2.0);
@@ -112,6 +104,7 @@ public:
         poseStdM_ = declare_parameter<double>("pose_std_m", 0.01);
         poseStdRad_ = declare_parameter<double>("pose_std_rad", 0.01);
         const bool imuReliable = declare_parameter<bool>("imu_qos_reliable", false);
+        const bool imageReliable = declare_parameter<bool>("image_qos_reliable", false);
 
         // Init changes into output_dir before System opens its files, so every path becomes absolute here.
         o.vocabulary = ucslam_node::AbsolutePath(o.vocabulary);
@@ -122,8 +115,15 @@ public:
         if(frameDrop != "oldest" && frameDrop != "none")
             return Fail("parameter frame_drop must be oldest or none, got " + frameDrop);
         o.drop_oldest = (frameDrop == "oldest");
-        if(depthSource != "live" && depthSource != "file")
-            return Fail("parameter depth_source must be live or file, got " + depthSource);
+        if(depthSource != "live" && depthSource != "file" && depthSource != "off")
+            return Fail("parameter depth_source must be live, file or off, got " + depthSource);
+        depthOff_ = (depthSource == "off");
+        if(o.imu_fill_gap_ms < 0.0)
+            return Fail("parameter imu_fill_gap_ms must be 0 (off) or positive");
+        if(o.imu_fill_gap_ms > 0.0 && (o.imu_fill_period_ms < 0.1 || o.imu_fill_period_ms > o.imu_fill_gap_ms))
+            return Fail("parameter imu_fill_period_ms must be between 0.1 and imu_fill_gap_ms");
+        if(o.imu_fill_gap_ms > 0.0 && (o.imu_fill_max_ms < o.imu_fill_gap_ms || o.imu_fill_max_ms > 10000.0))
+            return Fail("parameter imu_fill_max_ms must be between imu_fill_gap_ms and 10000");
         if(o.vocabulary.empty() || access(o.vocabulary.c_str(), R_OK) != 0)
             return Fail("cannot read the vocabulary " + o.vocabulary + " (parameter vocabulary)");
         std::string err = ucslam_node::CheckSettingsFile(settings);
@@ -135,17 +135,42 @@ public:
         if(!err.empty())
             return Fail(err);
 
+        // UCSLAM.DepthBackend (optional): the backend the depth constants of these settings were fitted with
+        // (scripts/jetson/make_d455_settings.py). Constants fitted for one backend are wrong for another.
+        const std::string fitBackend = ucslam_node::ReadSettingString(settings, "UCSLAM.DepthBackend");
+        if(!fitBackend.empty() && fitBackend != backend_)
+        {
+            if(!depthOff_)
+                return Fail("parameter depth_backend is " + backend_ + ", but the depth constants of " + settings +
+                            " were fitted with " + fitBackend + " (UCSLAM.DepthBackend). Run with depth_backend " +
+                            fitBackend + " (launch argument backend:=" + fitBackend + "), or fit the constants " +
+                            "again with " + backend_);
+            RCLCPP_INFO(get_logger(), "UC-SLAM: depth_source off, so depth_backend %s is not checked against "
+                        "UCSLAM.DepthBackend %s", backend_.c_str(), fitBackend.c_str());
+        }
+
         // The settings copy that System reads: the depth source and the late-depth rules of this run.
         domain_ = ucslam_node::ReadSettingString(settings, "UCSLAM.Dataset");
         std::vector<std::pair<std::string, std::string> > kv;
-        kv.push_back(std::make_pair("UCSLAM.DepthSource", "\"" + depthSource + "\""));
+        if(depthOff_)
+        {
+            // No depth network: the PriorNet thread must not start, or every keyframe would wait depth_wait_ms for
+            // a map that never comes. With UCSLAM.PriorNet 0 the System sends no depth request.
+            const std::string pn = ucslam_node::ReadSettingString(settings, "UCSLAM.PriorNet");
+            if(!pn.empty() && pn != "0")
+                RCLCPP_WARN(get_logger(), "UC-SLAM: depth_source off with UCSLAM.PriorNet %s in %s: the settings copy "
+                            "sets UCSLAM.PriorNet 0, so this run has no depth prior", pn.c_str(), settings.c_str());
+            kv.push_back(std::make_pair("UCSLAM.PriorNet", "0"));
+        }
+        else
+            kv.push_back(std::make_pair("UCSLAM.DepthSource", "\"" + depthSource + "\""));
         if(depthSource == "live")
         {
             kv.push_back(std::make_pair("UCSLAM.DepthWaitMs", std::to_string(depthWaitMs)));
             kv.push_back(std::make_pair("UCSLAM.DppWaitMs", std::to_string(dppWaitMs)));
             kv.push_back(std::make_pair("UCSLAM.DppDeferMaxKFs", std::to_string(dppDeferMaxKFs)));
         }
-        else
+        else if(depthSource == "file")
         {
             // The node runs in output_dir, so a relative cache path of the benchmark settings would not resolve.
             const std::string dir = depthDir.empty() ? ucslam_node::ReadSettingString(settings, "UCSLAM.DepthDir") : depthDir;
@@ -167,13 +192,16 @@ public:
         pubStatus_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>("~/status", reliable10);
         if(publishPoints_)
             pubPoints_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/tracked_points", rclcpp::QoS(1).best_effort());
-        pubRequest_ = create_publisher<ucslam_msgs::msg::DepthRequest>("depth_request", rclcpp::QoS(16).reliable());
+        if(!depthOff_)
+            pubRequest_ = create_publisher<ucslam_msgs::msg::DepthRequest>("depth_request", rclcpp::QoS(16).reliable());
         tfb_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
         core_.reset(new ucslam_node::NodeCore(o));
         RCLCPP_INFO(get_logger(), "UC-SLAM: loading the vocabulary and starting the system (settings %s)", o.settings.c_str());
-        err = core_->Start([this](const ucslam_node::Result& r) { OnResult(r); },
-                           [this](double t, int64_t ns, unsigned long id, const cv::Mat& img) { OnDepthRequest(t, ns, id, img); });
+        ucslam_node::NodeCore::DepthRequestCallback onRequest;
+        if(!depthOff_)
+            onRequest = [this](double t, int64_t ns, unsigned long id, const cv::Mat& img) { OnDepthRequest(t, ns, id, img); };
+        err = core_->Start([this](const ucslam_node::Result& r) { OnResult(r); }, onRequest);
         if(!err.empty())
             return Fail(err);
 
@@ -194,17 +222,30 @@ public:
             imuQos.best_effort();   // matches a best-effort and a reliable publisher
         subImu_ = create_subscription<sensor_msgs::msg::Imu>("imu", imuQos,
             [this](sensor_msgs::msg::Imu::ConstSharedPtr m) { OnImu(m); }, soImu);
-        subDepth_ = create_subscription<ucslam_msgs::msg::DepthPrior>("depth_prior", rclcpp::QoS(16).reliable(),
-            [this](ucslam_msgs::msg::DepthPrior::ConstSharedPtr m) { OnDepthPrior(m); }, soDepth);
+        if(!depthOff_)
+            subDepth_ = create_subscription<ucslam_msgs::msg::DepthPrior>("depth_prior", rclcpp::QoS(16).reliable(),
+                [this](ucslam_msgs::msg::DepthPrior::ConstSharedPtr m) { OnDepthPrior(m); }, soDepth);
+        // Images: best effort by default (matches any publisher). A best-effort reader gets no resend: when one UDP
+        // fragment of an image is lost (a socket buffer smaller than an image and a busy CPU), the whole image is
+        // lost. image_qos_reliable needs a reliable publisher (a bag replay, the RealSense driver by default).
+        rmw_qos_profile_t imageProfile = rmw_qos_profile_sensor_data;
+        if(imageReliable)
+            imageProfile.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
         if(o.stereo)
         {
-            subLeft_.subscribe(this, "image", rmw_qos_profile_sensor_data);
-            subRight_.subscribe(this, "image_right", rmw_qos_profile_sensor_data);
-            sync_ = std::make_shared<message_filters::Synchronizer<StereoPolicy> >(StereoPolicy(10), subLeft_, subRight_);
+            // Both stereo subscriptions run in the image callback group, not in the default group with the timer, and
+            // each keeps 30 images. With the default group and a depth of 5, a loaded replay of EuRoC MH_01 lost 37
+            // percent of the pairs before the synchronizer saw them, and the map was reset 7 times.
+            rmw_qos_profile_t stereoProfile = imageProfile;
+            stereoProfile.depth = std::max<size_t>(imageProfile.depth, 30);
+            subLeft_.subscribe(this, "image", stereoProfile, soImage);
+            subRight_.subscribe(this, "image_right", stereoProfile, soImage);
+            sync_ = std::make_shared<message_filters::Synchronizer<StereoPolicy> >(StereoPolicy(30), subLeft_, subRight_);
             sync_->registerCallback(std::bind(&SlamNode::OnStereo, this, std::placeholders::_1, std::placeholders::_2));
         }
         else
-            subImage_ = create_subscription<Image>("image", rclcpp::SensorDataQoS(),
+            subImage_ = create_subscription<Image>("image",
+                rclcpp::QoS(rclcpp::QoSInitialization::from_rmw(imageProfile), imageProfile),
                 [this](Image::ConstSharedPtr m) { OnImage(m); }, soImage);
 
         srvReset_ = create_service<std_srvs::srv::Trigger>("~/reset",
@@ -226,6 +267,17 @@ public:
                 res->message = req->data ? "localization only mode requested" : "SLAM mode requested";
             }, rmw_qos_profile_services_default, cbSrv_);
         timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { OnTimer(); }, cbSrv_);
+        if(o.imu_fill_gap_ms > 0.0)
+        {
+            RCLCPP_INFO(get_logger(), "UC-SLAM: IMU gaps over %.3f ms and up to %.1f ms are filled every %.3f ms. "
+                        "A frame inside a gap waits at most imu_wait_ms (%.1f ms) for the sample after it, then it is "
+                        "not tracked when it has fewer than two IMU samples (imu_short_frames)",
+                        o.imu_fill_gap_ms, o.imu_fill_max_ms, o.imu_fill_period_ms, o.imu_wait_ms);
+            if(o.imu_wait_ms < o.imu_fill_gap_ms)
+                RCLCPP_WARN(get_logger(), "UC-SLAM: imu_wait_ms (%.1f ms) is shorter than imu_fill_gap_ms (%.1f ms), "
+                            "so frames inside a gap are not filled in time and may be skipped", o.imu_wait_ms,
+                            o.imu_fill_gap_ms);
+        }
         RCLCPP_INFO(get_logger(), "UC-SLAM: running (%s-inertial, depth %s, domain %s)", o.stereo ? "stereo" : "mono",
                     depthSource.c_str(), domain_.c_str());
         return true;
@@ -249,21 +301,20 @@ private:
         return false;
     }
 
+    // 8-bit gray that owns its data. 16-bit images (TUM-VI bags) keep the high byte, as cv::imread with
+    // IMREAD_GRAYSCALE does for the benchmark examples and the depth cache (image_convert.h).
+    // ToMono8 never throws. A refused or failed image is counted in bad_images and dropped.
     cv::Mat ToMono(const Image::ConstSharedPtr& msg)
     {
-        try
+        std::string err;
+        cv::Mat im = ucslam_node::ToMono8(msg->encoding, msg->width, msg->height, msg->step, msg->is_bigendian != 0,
+                                          msg->data.data(), msg->data.size(), &err);
+        if(im.empty())
         {
-            // 16-bit images (TUM-VI bags): keep the high byte, as cv::imread with IMREAD_GRAYSCALE does for the
-            // benchmark examples and the depth cache.
-            if(msg->encoding == "mono16" || msg->encoding == "16UC1")
-                return HighByte(cv_bridge::toCvShare(msg)->image);
-            return cv_bridge::toCvCopy(msg, "mono8")->image;
+            badImages_++;
+            RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000, "UC-SLAM: image conversion failed: %s", err.c_str());
         }
-        catch(const cv_bridge::Exception& e)
-        {
-            RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000, "UC-SLAM: image conversion failed: %s", e.what());
-            return cv::Mat();
-        }
+        return im;
     }
 
     void OnImu(const sensor_msgs::msg::Imu::ConstSharedPtr& m)
@@ -273,18 +324,39 @@ private:
                        Eigen::Vector3f(m->angular_velocity.x, m->angular_velocity.y, m->angular_velocity.z));
     }
 
+    // An exception must not leave a subscription callback: the executor would end the process without saving.
     void OnImage(const Image::ConstSharedPtr& m)
     {
-        cv::Mat im = ToMono(m);
-        if(!im.empty())
-            core_->PushFrame(StampNs(m->header.stamp), im);
+        try
+        {
+            cv::Mat im = ToMono(m);
+            if(!im.empty())
+                core_->PushFrame(StampNs(m->header.stamp), im);
+        }
+        catch(const std::exception& e)
+        {
+            BadImage(e);
+        }
     }
 
     void OnStereo(const Image::ConstSharedPtr& l, const Image::ConstSharedPtr& r)
     {
-        cv::Mat a = ToMono(l), b = ToMono(r);
-        if(!a.empty() && !b.empty())
-            core_->PushFrame(StampNs(l->header.stamp), a, b);
+        try
+        {
+            cv::Mat a = ToMono(l), b = ToMono(r);
+            if(!a.empty() && !b.empty())
+                core_->PushFrame(StampNs(l->header.stamp), a, b);
+        }
+        catch(const std::exception& e)
+        {
+            BadImage(e);
+        }
+    }
+
+    void BadImage(const std::exception& e)
+    {
+        badImages_++;
+        RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000, "UC-SLAM: image dropped: %s", e.what());
     }
 
     void OnDepthPrior(const ucslam_msgs::msg::DepthPrior::ConstSharedPtr& m)
@@ -327,9 +399,17 @@ private:
         ucslam_msgs::msg::DepthRequest req;
         req.header.stamp = ToStamp(ns);
         req.kf_id = id;
-        std_msgs::msg::Header h;
-        h.stamp = req.header.stamp;
-        cv_bridge::CvImage(h, "mono8", img).toImageMsg(req.image);
+        // The ring image is the mono8 output of ToMono, packed rows (step = width).
+        Image& m = req.image;
+        m.header.stamp = req.header.stamp;
+        m.height = (uint32_t)img.rows;
+        m.width = (uint32_t)img.cols;
+        m.encoding = "mono8";
+        m.is_bigendian = 0;
+        m.step = (uint32_t)img.cols;
+        m.data.resize((size_t)img.rows * img.cols);
+        for(int r = 0; r < img.rows; r++)
+            std::memcpy(&m.data[(size_t)r * img.cols], img.ptr<uint8_t>(r), (size_t)img.cols);
         pubRequest_->publish(req);
     }
 
@@ -347,6 +427,15 @@ private:
         // No pose before IMU init (no metric scale, no gravity) and none while lost.
         if(stopping_ || !rclcpp::ok() || !r.imu_initialized || (r.state != 2 && r.state != 3))
             return;
+        // End-to-end latency of the pose: clock of the node (sim time with use_sim_time) minus the image stamp.
+        const double latencyMs = (double)(get_clock()->now().nanoseconds() - r.stamp_ns) * 1e-6;
+        if(latencyMs < 0.0)
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 10000, "UC-SLAM: pose latency %.1f ms is negative: the "
+                                 "image stamps are ahead of the node clock (camera not on system time?)", latencyMs);
+        {
+            std::lock_guard<std::mutex> lock(mStatus_);
+            latencyMs_.push_back(latencyMs);
+        }
         const Eigen::Quaternionf q = r.Twb.unit_quaternion();
         const Eigen::Vector3f p = r.Twb.translation();
 
@@ -416,7 +505,7 @@ private:
         s.hardware_id = "ucslam";
         int state;
         bool init;
-        double fromInit, p50, p90;
+        double fromInit, p50, p90, lat50, lat90;
         unsigned long changes;
         {
             std::lock_guard<std::mutex> lock(mStatus_);
@@ -426,6 +515,9 @@ private:
             p50 = Percentile(trackMs_, 0.5);
             p90 = Percentile(trackMs_, 0.9);
             trackMs_.clear();
+            lat50 = Percentile(latencyMs_, 0.5);
+            lat90 = Percentile(latencyMs_, 0.9);
+            latencyMs_.clear();
             changes = mapChanges_;
         }
         // Scale and gravity can still move until the last inertial refinement of the base system.
@@ -456,11 +548,30 @@ private:
         Add(s, "old_frames", std::to_string(c.old_frames.load()));
         Add(s, "imu_rejected", std::to_string(c.imu_rejected.load()));
         Add(s, "imu_wait_timeouts", std::to_string(c.imu_wait_timeouts.load()));
+        Add(s, "imu_filled", std::to_string(c.imu_filled.load()));
+        const uint64_t fillSkipped = c.imu_fill_skipped.load();
+        Add(s, "imu_fill_skipped", std::to_string(fillSkipped));
+        if(fillSkipped > lastFillSkipped_)
+            RCLCPP_WARN(get_logger(), "UC-SLAM: %llu IMU gap(s) longer than imu_fill_max_ms were not filled (clock "
+                        "jump or IMU dropout), %llu in total", (unsigned long long)(fillSkipped - lastFillSkipped_),
+                        (unsigned long long)fillSkipped);
+        lastFillSkipped_ = fillSkipped;
+        const uint64_t shortFrames = c.imu_short_frames.load();
+        Add(s, "imu_short_frames", std::to_string(shortFrames));
+        if(shortFrames > lastShortFrames_)
+            RCLCPP_WARN(get_logger(), "UC-SLAM: %llu frame(s) not tracked: fewer than two IMU samples since the last "
+                        "tracked frame (IMU gap longer than imu_wait_ms, or no IMU), %llu in total",
+                        (unsigned long long)(shortFrames - lastShortFrames_), (unsigned long long)shortFrames);
+        lastShortFrames_ = shortFrames;
+        Add(s, "bad_images", std::to_string(badImages_.load()));
         Add(s, "depth_requests", std::to_string(c.depth_requests.load()));
         Add(s, "depth_pushed", std::to_string(c.depth_pushed.load()));
         Add(s, "depth_refused", std::to_string(c.depth_refused.load() + refusedPriors_.load()));
         Add(s, "track_ms_p50", std::to_string(p50));
         Add(s, "track_ms_p90", std::to_string(p90));
+        // Over the poses published in the last window (0 when none was published).
+        Add(s, "latency_ms_p50", std::to_string(lat50));
+        Add(s, "latency_ms_p90", std::to_string(lat90));
         diagnostic_msgs::msg::DiagnosticArray a;
         a.header.stamp = now();
         a.status.push_back(s);
@@ -477,10 +588,10 @@ private:
 
     std::unique_ptr<ucslam_node::NodeCore> core_;
     std::string mapFrame_, bodyFrame_, trajName_, domain_, backend_;
-    bool publishTf_ = true, publishPoints_ = false, stereo_ = false;
+    bool publishTf_ = true, publishPoints_ = false, stereo_ = false, depthOff_ = false;
     double poseStdM_ = 0.01, poseStdRad_ = 0.01;
     std::atomic<bool> stopping_{false}, warnedDomain_{false}, warnedFormat_{false};
-    std::atomic<unsigned long> refusedPriors_{0};
+    std::atomic<unsigned long> refusedPriors_{0}, badImages_{0};
 
     rclcpp::CallbackGroup::SharedPtr cbImu_, cbImage_, cbDepth_, cbSrv_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdom_;
@@ -502,8 +613,9 @@ private:
     int lastState_ = -1;
     bool imuInit_ = false;
     double timeFromInit_ = 0.0;
-    std::vector<double> trackMs_;
+    std::vector<double> trackMs_, latencyMs_;
     unsigned long mapChanges_ = 0;
+    uint64_t lastFillSkipped_ = 0, lastShortFrames_ = 0;   // OnTimer only (mutually exclusive group, no lock)
 };
 
 }  // namespace

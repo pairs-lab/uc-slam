@@ -15,8 +15,10 @@
   <depend>nav_msgs</depend>
   <depend>diagnostic_msgs</depend>
   <depend>tf2_ros</depend>
-  <depend>cv_bridge</depend>
   <depend>message_filters</depend>
+  <!-- No cv_bridge and no libopencv-dev: the node uses the OpenCV of libORB_SLAM3 (see CMakeLists.txt). On JetPack
+       a rosdep key for OpenCV would pull Ubuntu's OpenCV next to NVIDIA's. The desktop tool scripts/asl_to_bag.py
+       imports cv2: install python3-opencv to run it. -->
   <depend>ucslam_msgs</depend>
   <exec_depend>ucslam_depth</exec_depend>
   <exec_depend>launch_ros</exec_depend>
